@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """
 RTL-Airband Scanner — Web App
-Run on the Raspberry Pi; open http://<pi-ip>:8080 in any browser on your network.
+Run on the Raspberry Pi; open http://<pi-ip>:8080 in any browser.
 
 Setup:
     pip install fastapi "uvicorn[standard]"
+    sudo apt install ffmpeg
     python3 app.py
 """
 from __future__ import annotations
 
-import re, json, struct, socket, asyncio, threading, argparse, uvicorn
+import re, json, struct, socket, asyncio, threading, argparse, shutil, uvicorn
 from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 
-# ── Embedded web page ──────────────────────────────────────────────────────────
+FFMPEG = shutil.which("ffmpeg")
+
+# ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -29,7 +32,7 @@ PAGE = r"""<!DOCTYPE html>
 :root{
   --bg:#0d1117;--card:#161b22;--card2:#21262d;--border:#30363d;
   --text:#e6edf3;--muted:#7d8590;--green:#3fb950;--gdim:rgba(63,185,80,.12);
-  --gborder:rgba(63,185,80,.35);--blue:#58a6ff;--red:#f85149;
+  --gborder:rgba(63,185,80,.35);--blue:#58a6ff;--red:#f85149;--yellow:#d29922;
   --mono:'SF Mono','Fira Code','Consolas',monospace;
 }
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
@@ -44,37 +47,40 @@ h1{font-size:15px;font-weight:600;letter-spacing:.02em;display:flex;align-items:
 .abtn.on{border-color:var(--green);color:var(--green);background:var(--gdim)}
 .asrc{font-size:11px;color:var(--muted)}
 main{max-width:1100px;margin:0 auto;padding:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:pointer;transition:border-color .2s}
-.card:hover{border-color:#484f58}
-.card.playing{border-color:var(--green)}
-.card-hdr{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
-.card-name{font-weight:600;font-size:13px}
-.card-mount{font-size:11px;color:var(--muted);font-family:var(--mono);margin-left:4px}
-.card-conn{margin-left:auto;font-size:11px}
-.card-conn.ok{color:var(--green)}.card-conn.err{color:var(--red)}
-.ch-list{padding:4px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:20px}
+.scard{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:pointer;transition:border-color .2s}
+.scard:hover{border-color:#484f58}
+.scard.playing{border-color:var(--green)}
+.scard.locked{border-color:var(--blue)}
+.shdr{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sname{font-weight:600;font-size:13px}
+.smount{font-size:11px;color:var(--muted);font-family:var(--mono);margin-left:2px}
+.sconn{margin-left:auto;font-size:11px}
+.sconn.ok{color:var(--green)}.sconn.err{color:var(--red)}.sconn.warn{color:var(--yellow)}
+.serr{font-size:11px;color:var(--red);padding:6px 14px;background:rgba(248,81,73,.08);border-bottom:1px solid rgba(248,81,73,.2)}
+.chlist{padding:4px 0}
 .ch{display:flex;align-items:center;gap:10px;padding:6px 14px;transition:background .15s}
 .ch.active{background:var(--gdim);border-left:3px solid var(--green);padding-left:11px}
 .ch-dot{font-size:10px;color:var(--muted);width:12px;flex-shrink:0}
 .ch.active .ch-dot{color:var(--green)}
-.ch-freq{font-family:var(--mono);font-size:13px;font-weight:500;width:78px;flex-shrink:0}
-.ch.active .ch-freq{color:var(--green)}
-.ch-lbl{color:var(--muted);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ch.active .ch-lbl{color:var(--text)}
-.ch-since{font-size:11px;color:var(--muted);font-family:var(--mono);flex-shrink:0}
-.no-ch{padding:14px;color:var(--muted);font-size:12px;text-align:center}
-.act-card{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-.act-hdr{padding:10px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
-.act-row{display:flex;align-items:center;gap:14px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px}
-.act-row:last-child{border-bottom:none}
+.ch-f{font-family:var(--mono);font-size:13px;font-weight:500;width:80px;flex-shrink:0}
+.ch.active .ch-f{color:var(--green)}
+.ch-l{color:var(--muted);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ch.active .ch-l{color:var(--text)}
+.ch-t{font-size:11px;color:var(--muted);font-family:var(--mono);flex-shrink:0}
+.noch{padding:14px;color:var(--muted);font-size:12px;text-align:center}
+.hint{padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)}
+.acard{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.ahdr{padding:10px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.arow{display:flex;align-items:center;gap:14px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px}
+.arow:last-child{border-bottom:none}
 .at{font-family:var(--mono);color:var(--muted);width:58px;flex-shrink:0}
 .as{color:var(--muted);width:96px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .af{font-family:var(--mono);font-weight:600;width:82px;flex-shrink:0}
 .al{color:var(--muted);flex:1}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200}
 .overlay.hidden{display:none}
-.obox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 36px;text-align:center;max-width:380px}
+.obox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 36px;text-align:center;max-width:400px}
 .obox h2{font-size:17px;margin-bottom:8px}
 .obox p{color:var(--muted);font-size:13px;margin-bottom:22px;line-height:1.6}
 .obtn{background:var(--green);border:none;border-radius:6px;color:#000;cursor:pointer;font-size:13px;font-weight:600;padding:9px 24px;margin:4px}
@@ -102,176 +108,256 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 </header>
 <main>
   <div class="grid" id="grid"></div>
-  <div class="act-card">
-    <div class="act-hdr">Recent Activity</div>
-    <div id="actlist"><div class="act-row"><span class="at" style="color:#484f58">—</span><span style="color:#484f58;font-size:12px">No activity yet</span></div></div>
+  <div class="acard">
+    <div class="ahdr">Recent Activity</div>
+    <div id="actlist">
+      <div class="arow"><span class="at" style="color:#484f58">—</span><span style="color:#484f58;font-size:12px">No activity yet</span></div>
+    </div>
   </div>
 </main>
 <div class="overlay hidden" id="overlay">
   <div class="obox">
     <h2>🔊 Enable Audio?</h2>
-    <p>Your browser requires a click before audio can play.<br>The scanner will automatically follow the active frequency.</p>
+    <p>Audio streams at ~150 ms latency using PCM over WebSocket.<br>
+       The player auto-follows whichever stream becomes active.<br>
+       Click a stream card to lock it to one source.</p>
     <button class="obtn" onclick="enableAudio()">Enable Audio</button>
     <button class="obtn skip" onclick="closeOverlay()">Display Only</button>
   </div>
 </div>
-<audio id="aud" preload="none"></audio>
 <script>
-const S={streams:{},playing:null,audioOn:false,locked:null};
-const aud=document.getElementById('aud');
-let ws,retry=0,activity=[];
+// ── State ──────────────────────────────────────────────────────────────────────
+const S = { streams:{}, playing:null, audioOn:false, locked:null };
+let ws, wsRetry=0;
+let actItems = [];
 
-function connect(){
-  ws=new WebSocket('ws://'+location.host+'/ws');
-  ws.onopen=()=>{retry=0;wsSt(true)};
-  ws.onclose=()=>{wsSt(false);setTimeout(connect,Math.min(2000*(++retry),15000))};
-  ws.onmessage=e=>onMsg(JSON.parse(e.data));
+// ── Audio (Web Audio API + PCM over WebSocket) ─────────────────────────────────
+// Each stream gets its own WebSocket delivering raw s16le PCM at 44100 Hz mono.
+// We schedule chunks 100 ms ahead — total latency ≈ 100 ms + one-chunk ≈ 120 ms.
+const RATE = 44100;
+let actx   = null;   // AudioContext
+let audWs  = null;   // current audio WebSocket
+let audMount = null; // which mount is feeding actx
+let nextAt = 0;      // scheduled up-to time (AudioContext clock)
+
+function initAudioCtx() {
+  if (actx) return;
+  actx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
 }
-function wsSt(ok){
-  document.getElementById('wdot').className='dot '+(ok?'ok':'err');
-  document.getElementById('wst').textContent=ok?'Connected':'Reconnecting…';
+
+function openAudioStream(mount) {
+  if (audMount === mount && audWs && audWs.readyState === WebSocket.OPEN) return;
+  if (audWs) { audWs.close(); audWs = null; }
+  audMount = mount;
+  nextAt   = 0;
+  initAudioCtx();
+  if (actx.state === 'suspended') actx.resume();
+
+  const url = 'ws://' + location.host + '/ws/audio' + mount;
+  audWs = new WebSocket(url);
+  audWs.binaryType = 'arraybuffer';
+
+  audWs.onopen = () => updateAudioUI();
+
+  audWs.onmessage = ({ data }) => {
+    if (!actx) return;
+    // data is raw s16le PCM
+    const s16 = new Int16Array(data);
+    const buf = actx.createBuffer(1, s16.length, RATE);
+    const ch  = buf.getChannelData(0);
+    for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
+    const src = actx.createBufferSource();
+    src.buffer = buf;
+    src.connect(actx.destination);
+    const now = actx.currentTime;
+    if (nextAt < now + 0.1) nextAt = now + 0.1;  // stay 100 ms ahead
+    src.start(nextAt);
+    nextAt += buf.duration;
+  };
+
+  audWs.onclose = () => { if (audMount === mount) updateAudioUI(); };
+  audWs.onerror = () => { if (audMount === mount) updateAudioUI(); };
 }
-function onMsg(m){
-  if(m.type==='state'){
-    m.streams.forEach(s=>{
-      S.streams[s.mount]=s;
-      (s.history||[]).forEach(h=>pushActivity(s.name,h.freq,h.label,h.time));
+
+function closeAudio() {
+  if (audWs) { audWs.close(); audWs = null; }
+  audMount = null;
+  nextAt   = 0;
+  if (actx) { actx.close(); actx = null; }
+}
+
+// ── WebSocket (control) ────────────────────────────────────────────────────────
+function connect() {
+  ws = new WebSocket('ws://' + location.host + '/ws');
+  ws.onopen  = () => { wsRetry=0; setWsSt(true); };
+  ws.onclose = () => { setWsSt(false); setTimeout(connect, Math.min(2000*(++wsRetry),15000)); };
+  ws.onmessage = e => onMsg(JSON.parse(e.data));
+}
+function setWsSt(ok) {
+  document.getElementById('wdot').className = 'dot ' + (ok ? 'ok' : 'err');
+  document.getElementById('wst').textContent = ok ? 'Connected' : 'Reconnecting…';
+}
+
+// ── Message handler ────────────────────────────────────────────────────────────
+function onMsg(m) {
+  if (m.type === 'state') {
+    m.streams.forEach(s => {
+      S.streams[s.mount] = s;
+      (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
     });
-    renderAll();autoAudio();
-  } else if(m.type==='freq_change'){
-    const s=S.streams[m.mount];if(!s)return;
-    s.activeFreq=m.freq;s.activeSince=m.time;
+    renderAll();
+    autoSelect();
+  } else if (m.type === 'freq_change') {
+    const s = S.streams[m.mount]; if (!s) return;
+    s.activeFreq  = m.freq;
+    s.activeSince = m.time;
+    s.lastError   = null;
     updateCard(m.mount);
-    pushActivity(m.name,m.freq,m.label,m.time);
-    if(S.audioOn&&(!S.locked||S.locked===m.mount))playMount(m.mount);
-  } else if(m.type==='conn'){
-    const s=S.streams[m.mount];if(s){s.connected=m.connected;updateCard(m.mount);}
+    pushActivity(m.name, m.freq, m.label, m.time);
+    if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
+  } else if (m.type === 'conn') {
+    const s = S.streams[m.mount]; if (!s) return;
+    s.connected = m.connected;
+    s.lastError  = m.error || null;
+    updateCard(m.mount);
   }
 }
 
-// ── Render ──────────────────────────────────────────────────────────────────
-function renderAll(){
-  const g=document.getElementById('grid');g.innerHTML='';
-  Object.values(S.streams).forEach(s=>{
-    const d=document.createElement('div');
-    d.className='card'+(S.playing===s.mount?' playing':'');
-    d.id='card'+eid(s.mount);d.onclick=()=>lockAudio(s.mount);
-    d.innerHTML=cardHtml(s);g.appendChild(d);
+// ── Render ─────────────────────────────────────────────────────────────────────
+function renderAll() {
+  const g = document.getElementById('grid'); g.innerHTML = '';
+  Object.values(S.streams).forEach(s => {
+    const d = document.createElement('div');
+    d.className = cardClass(s);
+    d.id = 'sc' + eid(s.mount);
+    d.onclick = () => lockTo(s.mount);
+    d.innerHTML = cardHtml(s);
+    g.appendChild(d);
   });
 }
-function updateCard(mount){
-  const d=document.getElementById('card'+eid(mount));if(!d)return;
-  const s=S.streams[mount];
-  d.className='card'+(S.playing===mount?' playing':'');
-  d.innerHTML=cardHtml(s);
+function updateCard(mount) {
+  const d = document.getElementById('sc' + eid(mount)); if (!d) return;
+  const s = S.streams[mount];
+  d.className = cardClass(s);
+  d.innerHTML = cardHtml(s);
 }
-function cardHtml(s){
-  const conn=s.connected
-    ?'<span class="card-conn ok">● live</span>'
-    :'<span class="card-conn err">○ connecting…</span>';
-  const chs=s.channels||{};
-  const freqs=Object.keys(chs).sort();
-  const spk=(S.playing===s.mount&&S.audioOn)?' <span class="blink" style="color:var(--green);font-size:10px">🔊</span>':'';
-  let rows='';
-  if(freqs.length){
-    freqs.forEach(f=>{
-      const lbl=chs[f]||'';const act=f===s.activeFreq;
-      const since=act&&s.activeSince?new Date(s.activeSince).toLocaleTimeString():'';
-      rows+=`<div class="ch${act?' active':''}">
+function cardClass(s) {
+  let c = 'scard';
+  if (S.locked === s.mount) c += ' locked';
+  else if (audMount === s.mount && S.audioOn) c += ' playing';
+  return c;
+}
+function cardHtml(s) {
+  const connHtml = s.connected
+    ? '<span class="sconn ok">● live</span>'
+    : '<span class="sconn err">○ connecting…</span>';
+  const spk = (audMount===s.mount && S.audioOn)
+    ? ' <span class="blink" style="color:var(--green);font-size:10px">🔊</span>' : '';
+  const lockBadge = S.locked===s.mount
+    ? ' <span style="font-size:10px;color:var(--blue)">🔒 locked</span>' : '';
+
+  const errHtml = s.lastError
+    ? `<div class="serr">⚠ ${s.lastError}</div>` : '';
+
+  const chs   = s.channels || {};
+  const freqs = Object.keys(chs).sort();
+  let rows = '';
+  if (freqs.length) {
+    freqs.forEach(f => {
+      const lbl = chs[f] || ''; const act = f === s.activeFreq;
+      const since = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
+      rows += `<div class="ch${act?' active':''}">
         <span class="ch-dot">${act?'◉':'○'}</span>
-        <span class="ch-freq">${f}</span>
-        <span class="ch-lbl">${lbl!==f?lbl:''}</span>
-        <span class="ch-since">${since}</span>
+        <span class="ch-f">${f}</span>
+        <span class="ch-l">${lbl!==f?lbl:''}</span>
+        <span class="ch-t">${since}</span>
       </div>`;
     });
-  } else if(s.activeFreq){
-    rows=`<div class="ch active">
+  } else if (s.activeFreq) {
+    rows = `<div class="ch active">
       <span class="ch-dot">◉</span>
-      <span class="ch-freq">${s.activeFreq}</span>
-      <span class="ch-lbl" style="font-style:italic;color:var(--muted)">auto-detected</span>
-      <span class="ch-since">${s.activeSince?new Date(s.activeSince).toLocaleTimeString():''}</span>
+      <span class="ch-f">${s.activeFreq}</span>
+      <span class="ch-l" style="font-style:italic;color:var(--muted)">auto-detected</span>
+      <span class="ch-t">${s.activeSince?new Date(s.activeSince).toLocaleTimeString():''}</span>
     </div>`;
   } else {
-    rows='<div class="no-ch">No activity yet</div>';
+    rows = '<div class="noch">No activity yet</div>';
   }
-  return `<div class="card-hdr">
-    <span class="card-name">${s.name}${spk}</span>
-    <span class="card-mount">${s.mount}</span>
-    ${conn}
-  </div><div class="ch-list">${rows}</div>`;
+  const hintTxt = S.locked===s.mount ? 'Click to unlock' : 'Click to lock audio here';
+  return `<div class="shdr">
+    <span class="sname">${s.name}${spk}${lockBadge}</span>
+    <span class="smount">${s.mount}</span>
+    ${connHtml}
+  </div>${errHtml}<div class="chlist">${rows}</div>
+  <div class="hint">${hintTxt}</div>`;
 }
-function eid(m){return m.replace(/[^a-zA-Z0-9]/g,'_')}
+function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
 
-// ── Activity feed ────────────────────────────────────────────────────────────
-function pushActivity(name,freq,label,iso){
-  activity.unshift({t:new Date(iso).toLocaleTimeString(),name,freq,label:label||''});
-  activity=activity.slice(0,30);
-  const list=document.getElementById('actlist');
-  list.innerHTML=activity.map(a=>`<div class="act-row">
-    <span class="at">${a.t}</span>
-    <span class="as">${a.name}</span>
-    <span class="af">${a.freq} MHz</span>
-    <span class="al">${a.label!==a.freq?a.label:''}</span>
-  </div>`).join('');
+// ── Activity ───────────────────────────────────────────────────────────────────
+function pushActivity(name, freq, label, iso) {
+  actItems.unshift({ t: new Date(iso).toLocaleTimeString(), name, freq, label: label||'' });
+  actItems = actItems.slice(0, 30);
+  document.getElementById('actlist').innerHTML = actItems.map(a =>
+    `<div class="arow">
+      <span class="at">${a.t}</span><span class="as">${a.name}</span>
+      <span class="af">${a.freq} MHz</span>
+      <span class="al">${a.label!==a.freq?a.label:''}</span>
+    </div>`).join('');
 }
 
-// ── Audio ────────────────────────────────────────────────────────────────────
-function autoAudio(){
-  let best=null,bestT=0;
-  Object.values(S.streams).forEach(s=>{
-    if(s.activeSince){const t=new Date(s.activeSince).getTime();if(t>bestT){bestT=t;best=s.mount;}}
+// ── Audio controls ─────────────────────────────────────────────────────────────
+function autoSelect() {
+  let best=null, bestT=0;
+  Object.values(S.streams).forEach(s => {
+    if (s.activeSince) { const t=new Date(s.activeSince).getTime(); if(t>bestT){bestT=t;best=s.mount;} }
   });
-  if(best)S.playing=best;
+  if (best) S.playing = best;
 }
-function playMount(mount){
-  if(S.playing===mount&&!aud.paused&&!aud.ended)return;
-  S.playing=mount;
-  aud.src='/audio'+mount;
-  aud.play().catch(()=>{});
+function switchAudio(mount) {
+  S.playing = mount;
+  if (S.audioOn) openAudioStream(mount);
   updateAudioUI();
-  Object.keys(S.streams).forEach(m=>updateCard(m));
+  Object.keys(S.streams).forEach(m => updateCard(m));
 }
-// Nudge playback toward live edge to combat buffer build-up
-setInterval(()=>{
-  if(!aud.src||aud.paused||!aud.buffered.length)return;
-  const edge=aud.buffered.end(aud.buffered.length-1);
-  if(edge-aud.currentTime>4)aud.currentTime=edge-0.5;
-},3000);
-
-function toggleAudio(){
-  if(!S.audioOn){document.getElementById('overlay').classList.remove('hidden');}
-  else{S.audioOn=false;aud.pause();aud.src='';updateAudioUI();}
-}
-function enableAudio(){
-  S.audioOn=true;closeOverlay();autoAudio();
-  if(S.playing)playMount(S.playing);
+function lockTo(mount) {
+  if (S.locked === mount) { S.locked = null; }
+  else { S.locked = mount; if (S.audioOn) switchAudio(mount); }
   updateAudioUI();
+  Object.keys(S.streams).forEach(m => updateCard(m));
 }
-function closeOverlay(){document.getElementById('overlay').classList.add('hidden');}
-function lockAudio(mount){
-  S.locked=(S.locked===mount)?null:mount;
-  if(S.audioOn&&S.locked)playMount(mount);
+function toggleAudio() {
+  if (!S.audioOn) { document.getElementById('overlay').classList.remove('hidden'); }
+  else { S.audioOn=false; closeAudio(); updateAudioUI(); Object.keys(S.streams).forEach(m=>updateCard(m)); }
+}
+function enableAudio() {
+  S.audioOn = true; closeOverlay();
+  autoSelect();
+  if (S.locked) switchAudio(S.locked);
+  else if (S.playing) switchAudio(S.playing);
   updateAudioUI();
 }
-function updateAudioUI(){
-  const btn=document.getElementById('abtn');
-  const src=document.getElementById('asrc');
-  if(S.audioOn&&S.playing){
-    const s=S.streams[S.playing];
-    btn.className='abtn on';
-    document.getElementById('aico').textContent='🔊';
-    document.getElementById('albl').textContent=S.locked?'Locked':'Auto';
-    src.textContent=s?s.name:'';
+function closeOverlay() { document.getElementById('overlay').classList.add('hidden'); }
+function updateAudioUI() {
+  const btn = document.getElementById('abtn');
+  const src = document.getElementById('asrc');
+  const connected = audWs && audWs.readyState === WebSocket.OPEN;
+  if (S.audioOn && audMount) {
+    const s = S.streams[audMount];
+    btn.className = 'abtn on';
+    document.getElementById('aico').textContent = connected ? '🔊' : '⏳';
+    document.getElementById('albl').textContent  = S.locked ? 'Locked' : 'Auto';
+    src.textContent = s ? s.name : '';
   } else {
-    btn.className='abtn';
-    document.getElementById('aico').textContent='🔇';
-    document.getElementById('albl').textContent='Enable Audio';
-    src.textContent='';
+    btn.className = 'abtn';
+    document.getElementById('aico').textContent = '🔇';
+    document.getElementById('albl').textContent  = 'Enable Audio';
+    src.textContent = '';
   }
 }
 
+// ── Init ───────────────────────────────────────────────────────────────────────
 connect();
-setTimeout(()=>document.getElementById('overlay').classList.remove('hidden'),900);
+setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
 </script>
 </body>
 </html>
@@ -403,18 +489,15 @@ class StreamMonitor:
 
     @property
     def active_freq(self):
-        with self._lock:
-            return self._active_freq
+        with self._lock: return self._active_freq
 
     @property
     def active_since(self):
-        with self._lock:
-            return self._active_since
+        with self._lock: return self._active_since
 
     @property
     def history(self):
-        with self._lock:
-            return list(self._history)
+        with self._lock: return list(self._history)
 
     def start(self):
         self._running = True
@@ -423,54 +506,55 @@ class StreamMonitor:
 
     def stop(self):
         self._running = False
-        if self._stream:
-            self._stream.close()
+        if self._stream: self._stream.close()
 
     def _emit(self, event: dict):
-        if self._on_event:
-            self._on_event(event)
+        if self._on_event: self._on_event(event)
 
     def _loop(self):
+        import time
         while self._running:
             self.connected = False
             self._emit({"type": "conn", "mount": self.mount, "connected": False})
+
             self._stream = IcyStream(self.host, self.port, self.mount)
             try:
                 self._stream.connect()
             except Exception as exc:
-                print(f"[{self.name}] connection failed: {exc}")
-                import time; time.sleep(self.RECONNECT)
+                err = str(exc)
+                print(f"[{self.name}] connect failed: {err}")
+                self._emit({
+                    "type": "conn", "mount": self.mount,
+                    "connected": False, "error": err,
+                })
+                time.sleep(self.RECONNECT)
                 continue
+
             self.connected = True
-            self._emit({"type": "conn", "mount": self.mount, "connected": True})
+            self._emit({"type": "conn", "mount": self.mount,
+                        "connected": True, "error": None})
 
             for chunk in self._stream.iter_audio():
-                if not self._running:
-                    break
-                title = self._stream.current_title
-                freq  = _match_title(title, self.channels)
+                if not self._running: break
+                freq = _match_title(self._stream.current_title, self.channels)
                 with self._lock:
                     if freq and freq != self._active_freq:
                         self._active_freq  = freq
                         self._active_since = datetime.now()
                         label = self.channels.get(freq, "")
-                        self._history.appendleft(
-                            (datetime.now(), freq, label)
-                        )
+                        self._history.appendleft((datetime.now(), freq, label))
                         self._emit({
-                            "type":  "freq_change",
-                            "mount": self.mount,
-                            "name":  self.name,
-                            "freq":  freq,
-                            "label": label,
-                            "time":  datetime.now().isoformat(),
+                            "type": "freq_change", "mount": self.mount,
+                            "name": self.name, "freq": freq, "label": label,
+                            "time": datetime.now().isoformat(),
                         })
 
             if self._running:
                 self.connected = False
-                self._emit({"type": "conn", "mount": self.mount, "connected": False})
-                print(f"[{self.name}] stream dropped, reconnecting in {self.RECONNECT}s")
-                import time; time.sleep(self.RECONNECT)
+                self._emit({"type": "conn", "mount": self.mount,
+                            "connected": False, "error": "Stream ended"})
+                print(f"[{self.name}] stream ended, reconnecting in {self.RECONNECT}s")
+                time.sleep(self.RECONNECT)
 
 
 # ── WebSocket manager ──────────────────────────────────────────────────────────
@@ -481,53 +565,45 @@ class WsManager:
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
-        async with self._lock:
-            self._clients.append(ws)
+        async with self._lock: self._clients.append(ws)
 
     async def disconnect(self, ws: WebSocket):
         async with self._lock:
-            try:
-                self._clients.remove(ws)
-            except ValueError:
-                pass
+            try: self._clients.remove(ws)
+            except ValueError: pass
 
     async def broadcast(self, data: dict):
         msg = json.dumps(data, default=str)
         async with self._lock:
             dead = []
             for ws in self._clients:
-                try:
-                    await ws.send_text(msg)
-                except Exception:
-                    dead.append(ws)
+                try: await ws.send_text(msg)
+                except Exception: dead.append(ws)
             for ws in dead:
-                try:
-                    self._clients.remove(ws)
-                except ValueError:
-                    pass
+                try: self._clients.remove(ws)
+                except ValueError: pass
 
 
 # ── App state ──────────────────────────────────────────────────────────────────
-monitors:  list[StreamMonitor]          = []
-cfg:       dict                         = {}
-wsman:     WsManager                    = WsManager()
-_evqueue:  asyncio.Queue | None         = None
-_evloop:   asyncio.AbstractEventLoop | None = None
+monitors: list[StreamMonitor]           = []
+cfg:      dict                          = {}
+wsman:    WsManager                     = WsManager()
+_evq:     asyncio.Queue | None          = None
+_evloop:  asyncio.AbstractEventLoop | None = None
 
 
 def _emit(event: dict):
-    """Bridge: called from sync monitor threads, queues into async event loop."""
-    if _evloop and _evqueue:
-        asyncio.run_coroutine_threadsafe(_evqueue.put(event), _evloop)
+    if _evloop and _evq:
+        asyncio.run_coroutine_threadsafe(_evq.put(event), _evloop)
 
 
-async def _broadcast_loop():
+async def _bcast_loop():
     while True:
-        event = await _evqueue.get()
+        event = await _evq.get()
         await wsman.broadcast(event)
 
 
-def _get_state() -> dict:
+def _state() -> dict:
     return {
         "type": "state",
         "streams": [
@@ -542,6 +618,7 @@ def _get_state() -> dict:
                     for ts, f, lb in m.history[:10]
                 ],
                 "channels": m.channels,
+                "lastError": None,
             }
             for m in monitors
         ],
@@ -551,15 +628,13 @@ def _get_state() -> dict:
 # ── Lifespan ───────────────────────────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _evqueue, _evloop
-    _evloop  = asyncio.get_running_loop()
-    _evqueue = asyncio.Queue()
-    asyncio.create_task(_broadcast_loop())
-    for m in monitors:
-        m.start()
+    global _evq, _evloop
+    _evloop = asyncio.get_running_loop()
+    _evq    = asyncio.Queue()
+    asyncio.create_task(_bcast_loop())
+    for m in monitors: m.start()
     yield
-    for m in monitors:
-        m.stop()
+    for m in monitors: m.stop()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -571,67 +646,59 @@ async def index():
     return PAGE
 
 
-@app.get("/audio/{mount_path:path}")
-async def audio_proxy(mount_path: str, request: Request):
-    """Proxy the Icecast stream to the browser as a clean audio stream."""
+@app.websocket("/ws/audio/{mount_path:path}")
+async def audio_ws(ws: WebSocket, mount_path: str):
+    """
+    Stream raw PCM (s16le, 44100 Hz, mono) via WebSocket.
+    ffmpeg connects to Icecast, decodes whatever format, outputs PCM.
+    The browser's Web Audio API plays it with ~100 ms lookahead.
+    """
+    if not FFMPEG:
+        await ws.close(code=1011, reason="ffmpeg not found on server")
+        return
+
+    await ws.accept()
     host  = cfg.get("host", "localhost")
     port  = cfg.get("port", 8000)
     mount = "/" + mount_path.lstrip("/")
+    url   = f"http://{host}:{port}{mount}"
 
-    async def generate():
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=10
-            )
-        except Exception as exc:
-            print(f"Audio proxy connect failed: {exc}")
-            return
-        try:
-            req = "\r\n".join([
-                f"GET {mount} HTTP/1.0",
-                f"Host: {host}:{port}",
-                "User-Agent: RTLAirbandScanner/1.0",
-                "Connection: close", "", ""
-            ])
-            writer.write(req.encode())
-            await writer.drain()
-            # Skip HTTP response headers
-            buf = b""
-            while b"\r\n\r\n" not in buf:
-                chunk = await asyncio.wait_for(reader.read(1), timeout=10)
-                if not chunk:
-                    return
-                buf += chunk
-            # Stream audio to browser
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    data = await asyncio.wait_for(reader.read(8192), timeout=2.0)
-                    if not data:
-                        break
-                    yield data
-                except asyncio.TimeoutError:
-                    continue
-        finally:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-    return StreamingResponse(
-        generate(),
-        media_type="audio/mpeg",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    proc = await asyncio.create_subprocess_exec(
+        FFMPEG,
+        "-loglevel",  "quiet",
+        "-reconnect", "1", "-reconnect_streamed", "1",
+        "-i",         url,
+        "-f",         "s16le",   # raw PCM, signed 16-bit little-endian
+        "-ar",        "44100",   # sample rate the browser AudioContext expects
+        "-ac",        "1",       # mono
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
     )
+
+    # 4096 bytes = 1024 samples = ~23 ms per chunk at 44100 Hz
+    CHUNK = 4096
+    try:
+        while True:
+            data = await asyncio.wait_for(proc.stdout.read(CHUNK), timeout=10.0)
+            if not data:
+                break
+            await ws.send_bytes(data)
+    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
+        pass
+    finally:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
 
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await wsman.connect(ws)
     try:
-        await ws.send_text(json.dumps(_get_state(), default=str))
+        await ws.send_text(json.dumps(_state(), default=str))
         while True:
             try:
                 await asyncio.wait_for(ws.receive_text(), timeout=30)
@@ -651,18 +718,17 @@ def main():
     global cfg, monitors
 
     p = argparse.ArgumentParser(description="RTL-Airband Scanner Web App")
-    p.add_argument("--config", default=str(DEFAULT_CONFIG))
-    p.add_argument("--listen-port", type=int, default=8080,
-                   help="Web server port (default: 8080)")
+    p.add_argument("--config",       default=str(DEFAULT_CONFIG))
+    p.add_argument("--listen-port",  type=int, default=8080)
     args = p.parse_args()
 
     config_path = Path(args.config)
     if config_path.exists():
         with open(config_path) as f:
             cfg = json.load(f)
-        print(f"Config: {config_path}")
+        print(f"Config loaded: {config_path}")
     else:
-        print(f"Warning: {config_path} not found, using defaults")
+        print(f"Warning: {config_path} not found — using defaults")
 
     host     = cfg.get("host",    "172.31.10.192")
     port     = cfg.get("port",    8000)
@@ -675,14 +741,15 @@ def main():
     monitors = [
         StreamMonitor(
             name=s.get("name", Path(s["mount"]).stem),
-            host=host,
-            port=port,
-            mount=s["mount"],
+            host=host, port=port, mount=s["mount"],
             channels=s.get("channels", channels),
             on_event=_emit,
         )
         for s in streams
     ]
+
+    if not FFMPEG:
+        print("WARNING: ffmpeg not found — audio will not work (sudo apt install ffmpeg)")
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")
     uvicorn.run(app, host="0.0.0.0", port=args.listen_port, log_level="warning")
