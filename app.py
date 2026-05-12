@@ -513,23 +513,26 @@ class StreamMonitor:
 
     def _loop(self):
         import time
+        last_error: str | None = None
         while self._running:
             self.connected = False
-            self._emit({"type": "conn", "mount": self.mount, "connected": False})
+            self._emit({"type": "conn", "mount": self.mount,
+                        "connected": False, "error": last_error})
 
             self._stream = IcyStream(self.host, self.port, self.mount)
             try:
                 self._stream.connect()
             except Exception as exc:
-                err = str(exc)
-                print(f"[{self.name}] connect failed: {err}")
+                last_error = str(exc)
+                print(f"[{self.name}] connect failed: {last_error}")
                 self._emit({
                     "type": "conn", "mount": self.mount,
-                    "connected": False, "error": err,
+                    "connected": False, "error": last_error,
                 })
                 time.sleep(self.RECONNECT)
                 continue
 
+            last_error = None
             self.connected = True
             self._emit({"type": "conn", "mount": self.mount,
                         "connected": True, "error": None})
