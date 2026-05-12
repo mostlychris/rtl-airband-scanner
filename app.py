@@ -700,16 +700,24 @@ async def audio_ws(ws: WebSocket, mount_path: str):
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await wsman.connect(ws)
+
+    async def _keepalive():
+        while True:
+            await asyncio.sleep(25)
+            try:
+                await ws.send_text(json.dumps({"type": "ping"}))
+            except Exception:
+                return
+
+    ka = asyncio.create_task(_keepalive())
     try:
         await ws.send_text(json.dumps(_state(), default=str))
         while True:
-            try:
-                await asyncio.wait_for(ws.receive_text(), timeout=30)
-            except asyncio.TimeoutError:
-                await ws.send_text(json.dumps({"type": "ping"}))
+            await ws.receive_text()
     except (WebSocketDisconnect, Exception):
         pass
     finally:
+        ka.cancel()
         await wsman.disconnect(ws)
 
 
