@@ -414,6 +414,7 @@ class IcyStream:
         length = struct.unpack("B", self._recv_exact(1))[0] * 16
         if length:
             raw = self._recv_exact(length).decode("utf-8", errors="replace").rstrip("\x00")
+            print(f"  [meta raw] {raw!r}")
             m = re.search(r"StreamTitle='([^']*)'", raw)
             if m:
                 self.current_title = m.group(1)
