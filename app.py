@@ -10,14 +10,12 @@ Setup:
 """
 from __future__ import annotations
 
-import re, json, struct, socket, asyncio, threading, argparse, shutil, uvicorn
+import re, json, struct, socket, asyncio, threading, argparse, uvicorn
 from pathlib import Path
 from datetime import datetime
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse
-
-FFMPEG = shutil.which("ffmpeg")
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -117,7 +115,7 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 <div class="overlay hidden" id="overlay">
   <div class="obox">
     <h2>🔊 Enable Audio?</h2>
-    <p>Audio streams at ~150 ms latency using PCM over WebSocket.<br>
+    <p>Audio plays natively in your browser, proxied from the Icecast stream.<br>
        The player auto-follows whichever stream becomes active.<br>
        Click a stream card to lock it to one source.</p>
     <button class="obtn" onclick="enableAudio()">Enable Audio</button>
@@ -130,63 +128,25 @@ const S = { streams:{}, playing:null, audioOn:false, locked:null };
 let ws, wsRetry=0;
 let actItems = [];
 
-// ── Audio (Web Audio API + PCM over WebSocket) ─────────────────────────────────
-// Each stream gets its own WebSocket delivering raw s16le PCM at 44100 Hz mono.
-// We schedule chunks 100 ms ahead — total latency ≈ 100 ms + one-chunk ≈ 120 ms.
-const RATE = 44100;
-let actx   = null;   // AudioContext
-let audWs  = null;   // current audio WebSocket
-let audMount = null; // which mount is feeding actx
-let nextAt = 0;      // scheduled up-to time (AudioContext clock)
-
-function initAudioCtx() {
-  if (actx) return;
-  actx = new AudioContext({ sampleRate: RATE, latencyHint: 'interactive' });
-}
+// ── Audio (HTML5 native playback via HTTP proxy) ───────────────────────────────
+let audEl    = null;   // <Audio> element
+let audMount = null;   // which mount is feeding audEl
 
 function openAudioStream(mount) {
-  if (audMount === mount && audWs && audWs.readyState === WebSocket.OPEN) return;
-  if (audWs) { audWs.close(); audWs = null; }
+  if (audMount === mount && audEl && !audEl.paused) return;
+  closeAudio();
   audMount = mount;
-  nextAt   = 0;
-  initAudioCtx();
-  if (actx.state === 'suspended') actx.resume();
-
-  const url = 'ws://' + location.host + '/ws/audio' + mount;
-  audWs = new WebSocket(url);
-  audWs.binaryType = 'arraybuffer';
-
-  audWs.onopen = () => updateAudioUI();
-
-  const MAX_QUEUE = 0.6; // seconds — discard chunks beyond this to prevent runaway buffering
-  audWs.onmessage = ({ data }) => {
-    if (!actx) return;
-    if (actx.state === 'suspended') { actx.resume(); return; }
-    if (actx.state !== 'running') return;
-    const now = actx.currentTime;
-    if (nextAt > now + MAX_QUEUE) return; // too far ahead, drop this chunk
-    // data is raw s16le PCM
-    const s16 = new Int16Array(data);
-    const buf = actx.createBuffer(1, s16.length, RATE);
-    const ch  = buf.getChannelData(0);
-    for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
-    const src = actx.createBufferSource();
-    src.buffer = buf;
-    src.connect(actx.destination);
-    if (nextAt < now + 0.1) nextAt = now + 0.1;  // stay 100 ms ahead
-    src.start(nextAt);
-    nextAt += buf.duration;
-  };
-
-  audWs.onclose = () => { if (audMount === mount) updateAudioUI(); };
-  audWs.onerror = () => { if (audMount === mount) updateAudioUI(); };
+  audEl = new Audio('/audio' + mount);
+  audEl.preload = 'none';
+  audEl.onended = () => updateAudioUI();
+  audEl.onerror = () => updateAudioUI();
+  audEl.play().catch(() => {});
+  updateAudioUI();
 }
 
 function closeAudio() {
-  if (audWs) { audWs.close(); audWs = null; }
+  if (audEl) { audEl.pause(); audEl.src = ''; audEl = null; }
   audMount = null;
-  nextAt   = 0;
-  if (actx) { actx.close(); actx = null; }
 }
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
@@ -349,7 +309,7 @@ function closeOverlay() { document.getElementById('overlay').classList.add('hidd
 function updateAudioUI() {
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
-  const connected = audWs && audWs.readyState === WebSocket.OPEN;
+  const connected = audEl && !audEl.error && !audEl.ended && !audEl.paused;
   if (S.audioOn && audMount) {
     const s = S.streams[audMount];
     btn.className = 'abtn on';
@@ -553,16 +513,18 @@ class StreamMonitor:
 
             print(f"[{self.name}] connected, metaint={self._stream.metaint}")
             SQUELCH_TIMEOUT = 30  # seconds before clearing an inactive frequency
-            _last_title = ""
+            _last_title      = ""
+            _squelch_cleared = False  # True after timeout-clear; prevents stale title re-firing
             for chunk in self._stream.iter_audio():
                 if not self._running: break
                 if self._stream.current_title != _last_title:
-                    _last_title = self._stream.current_title
+                    _last_title      = self._stream.current_title
+                    _squelch_cleared = False  # new title from RTLSDR-Airband — ready to match again
                     print(f"[{self.name}] title: {_last_title!r}")
                 freq = _match_title(self._stream.current_title, self.channels)
                 title_age = time.time() - self._stream.title_changed_at
                 with self._lock:
-                    if freq and freq != self._active_freq:
+                    if freq and freq != self._active_freq and not _squelch_cleared:
                         self._active_freq  = freq
                         self._active_since = datetime.now()
                         label = self.channels.get(freq, "")
@@ -577,6 +539,7 @@ class StreamMonitor:
                     ):
                         self._active_freq  = None
                         self._active_since = None
+                        _squelch_cleared   = True
                         self._emit({"type": "freq_clear", "mount": self.mount})
 
             if self._running:
@@ -691,56 +654,51 @@ async def debug():
     }
 
 
-@app.websocket("/ws/audio/{mount_path:path}")
-async def audio_ws(ws: WebSocket, mount_path: str):
-    """
-    Stream raw PCM (s16le, 44100 Hz, mono) via WebSocket.
-    ffmpeg connects to Icecast, decodes whatever format, outputs PCM.
-    The browser's Web Audio API plays it with ~100 ms lookahead.
-    """
-    if not FFMPEG:
-        await ws.close(code=1011, reason="ffmpeg not found on server")
-        return
-
-    await ws.accept()
+@app.get("/audio/{mount_path:path}")
+async def audio_proxy(mount_path: str, request: Request):
+    """Proxy the Icecast MP3 stream so the browser can play it natively."""
     host  = cfg.get("host", "localhost")
     port  = cfg.get("port", 8000)
     mount = "/" + mount_path.lstrip("/")
-    url   = f"http://{host}:{port}{mount}"
 
-    proc = await asyncio.create_subprocess_exec(
-        FFMPEG,
-        "-loglevel",        "quiet",
-        "-reconnect",       "1", "-reconnect_streamed", "1",
-        "-fflags",          "+nobuffer",
-        "-flags",           "low_delay",
-        "-analyzeduration", "0",
-        "-probesize",       "32",
-        "-i",               url,
-        "-f",               "s16le",   # raw PCM, signed 16-bit little-endian
-        "-ar",              "44100",   # sample rate the browser AudioContext expects
-        "-ac",              "1",       # mono
-        "pipe:1",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-
-    # 4096 bytes = 1024 samples = ~23 ms per chunk at 44100 Hz
-    CHUNK = 4096
-    try:
-        while True:
-            data = await asyncio.wait_for(proc.stdout.read(CHUNK), timeout=10.0)
-            if not data:
-                break
-            await ws.send_bytes(data)
-    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
-        pass
-    finally:
+    async def _gen():
         try:
-            proc.kill()
-            await proc.wait()
+            reader, writer = await asyncio.open_connection(host, port)
         except Exception:
-            pass
+            return
+        try:
+            writer.write((
+                f"GET {mount} HTTP/1.0\r\n"
+                f"Host: {host}:{port}\r\n"
+                "Icy-MetaData: 0\r\n"
+                "Connection: close\r\n\r\n"
+            ).encode())
+            await writer.drain()
+            # skip HTTP response headers
+            while True:
+                line = await asyncio.wait_for(reader.readline(), timeout=10.0)
+                if line in (b"\r\n", b"\n", b""):
+                    break
+            # stream body to browser
+            while True:
+                data = await asyncio.wait_for(reader.read(4096), timeout=30.0)
+                if not data:
+                    break
+                yield data
+        except Exception:
+            return
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        _gen(),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.websocket("/ws")
@@ -804,9 +762,6 @@ def main():
         )
         for s in streams
     ]
-
-    if not FFMPEG:
-        print("WARNING: ffmpeg not found — audio will not work (sudo apt install ffmpeg)")
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")
     uvicorn.run(app, host="0.0.0.0", port=args.listen_port, log_level="warning")
