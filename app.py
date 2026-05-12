@@ -649,6 +649,18 @@ async def index():
     return PAGE
 
 
+@app.get("/debug")
+async def debug():
+    return {
+        "monitors": [
+            {"name": m.name, "mount": m.mount,
+             "connected": m.connected, "active_freq": m.active_freq}
+            for m in monitors
+        ],
+        "queue_size": _evq.qsize() if _evq else -1,
+    }
+
+
 @app.websocket("/ws/audio/{mount_path:path}")
 async def audio_ws(ws: WebSocket, mount_path: str):
     """
