@@ -29,6 +29,10 @@ RTL_SAMP_RATE = 250000  # capture rate passed to rtl_fm via -s
 _rtl_oversample = (1_000_000 // RTL_SAMP_RATE) + 1          # = 5  for 250 kHz
 RTL_HW_OFFSET   = (RTL_SAMP_RATE * _rtl_oversample) // 4    # = 312 500 Hz
 
+# Silence chunk sent to audio WebSocket clients every 5 s when no signal is
+# active — keeps the connection alive so the browser never needs to re-enable.
+_AUDIO_KEEPALIVE = bytes(int(AUDIO_RATE * 2 * 0.1))         # 100 ms of zeros
+
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -160,12 +164,18 @@ function openAudioStream(mount) {
   audMount = mount;
   nextAt   = 0;
   initAudioCtx();
-  if (actx.state === 'suspended') actx.resume();
+  if (actx && actx.state === 'suspended') actx.resume();
 
   audWs = new WebSocket('ws://' + location.host + '/ws/audio');
   audWs.binaryType = 'arraybuffer';
   audWs.onopen  = () => updateAudioUI();
-  audWs.onclose = audWs.onerror = () => { audMount = null; nextAt = 0; updateAudioUI(); };
+  audWs.onerror = () => {};  // onclose always follows
+  audWs.onclose = () => {
+    const m = audMount;
+    audMount = null; nextAt = 0; updateAudioUI();
+    // Auto-reconnect when audio is still enabled (i.e. closed unexpectedly)
+    if (S.audioOn && m) setTimeout(() => { if (S.audioOn) openAudioStream(m); }, 2000);
+  };
 
   const MAX_QUEUE = 1.5;
   audWs.onmessage = ({ data }) => {
@@ -189,7 +199,7 @@ function openAudioStream(mount) {
 function closeAudio() {
   if (audWs) { audWs.close(); audWs = null; }
   audMount = null; nextAt = 0;
-  if (actx) { actx.close(); actx = null; }
+  if (actx) actx.suspend();  // suspend rather than close — avoids gesture requirement on re-enable
 }
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
@@ -717,9 +727,12 @@ async def audio_ws(ws: WebSocket):
     _audio_clients.append(q)
     try:
         while True:
-            data = await asyncio.wait_for(q.get(), timeout=10.0)
+            try:
+                data = await asyncio.wait_for(q.get(), timeout=5.0)
+            except asyncio.TimeoutError:
+                data = _AUDIO_KEEPALIVE   # silence — keeps connection alive
             await ws.send_bytes(data)
-    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
+    except (WebSocketDisconnect, Exception):
         pass
     finally:
         try: _audio_clients.remove(q)
