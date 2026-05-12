@@ -537,8 +537,13 @@ class StreamMonitor:
             self._emit({"type": "conn", "mount": self.mount,
                         "connected": True, "error": None})
 
+            print(f"[{self.name}] connected, metaint={self._stream.metaint}")
+            _last_title = ""
             for chunk in self._stream.iter_audio():
                 if not self._running: break
+                if self._stream.current_title != _last_title:
+                    _last_title = self._stream.current_title
+                    print(f"[{self.name}] title: {_last_title!r}")
                 freq = _match_title(self._stream.current_title, self.channels)
                 with self._lock:
                     if freq and freq != self._active_freq:
