@@ -377,23 +377,24 @@ class RTLFMScanner:
     Runs rtl_fm in scan mode, reads raw PCM from stdout, parses stderr for
     frequency info, and detects squelch via RMS level.
     """
-    SQUELCH_HOLD = 3.0   # seconds to keep freq active after signal drops
-    CHUNK_SECS   = 0.1   # seconds of audio per processing chunk
+    CHUNK_SECS = 0.1   # seconds of audio per processing chunk
 
     def __init__(self, name: str, channels: dict[str, str],
                  squelch: int = 70, squelch_rms: float = 0.003,
+                 squelch_hold: float = 2.0,
                  ppm: int = 0, modulation: str = "nbfm",
                  device: str = "0", gain: str = "auto",
                  on_event=None, on_audio=None):
-        self.name        = name
-        self.channels    = channels
-        self.frequencies = sorted(float(f) for f in channels)
-        self.squelch     = squelch
-        self.squelch_rms = squelch_rms   # Python-side threshold (0.0–1.0)
-        self.ppm         = ppm
-        self.modulation  = modulation
-        self.device      = str(device)
-        self.gain        = str(gain)
+        self.name         = name
+        self.channels     = channels
+        self.frequencies  = sorted(float(f) for f in channels)
+        self.squelch      = squelch
+        self.squelch_rms  = squelch_rms   # Python-side threshold (0.0–1.0)
+        self.squelch_hold = squelch_hold  # seconds before clearing inactive freq
+        self.ppm          = ppm
+        self.modulation   = modulation
+        self.device       = str(device)
+        self.gain         = str(gain)
         self._on_event  = on_event
         self._on_audio  = on_audio
 
@@ -500,8 +501,8 @@ class RTLFMScanner:
         self.connected = True
         self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
         print(f"[Scanner] started — {len(self.frequencies)} frequencies, "
-              f"squelch={self.squelch}, rms_threshold={self.squelch_rms}, "
-              f"mod={self.modulation}")
+              f"squelch={self.squelch}, squelch_rms={self.squelch_rms}, "
+              f"squelch_hold={self.squelch_hold}s, mod={self.modulation}")
 
         CHUNK = int(AUDIO_RATE * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
         squelch_open = False
@@ -546,7 +547,7 @@ class RTLFMScanner:
                     self._emit_audio(data)
 
                 else:
-                    if squelch_open and time.time() - last_sig_t > self.SQUELCH_HOLD:
+                    if squelch_open and time.time() - last_sig_t > self.squelch_hold:
                         with self._lock:
                             squelch_open      = False
                             self._active_freq  = None
@@ -731,11 +732,12 @@ def main():
         print(f"Warning: {config_path} not found — using defaults")
 
     scanner = RTLFMScanner(
-        name        = cfg.get("name", "Scanner"),
-        channels    = cfg.get("channels", {"446.000": "446.000"}),
-        squelch     = cfg.get("squelch", 70),
-        squelch_rms = cfg.get("squelch_rms", 0.003),
-        ppm         = cfg.get("ppm", 0),
+        name         = cfg.get("name", "Scanner"),
+        channels     = cfg.get("channels", {"446.000": "446.000"}),
+        squelch      = cfg.get("squelch", 70),
+        squelch_rms  = cfg.get("squelch_rms", 0.003),
+        squelch_hold = cfg.get("squelch_hold", 2.0),
+        ppm          = cfg.get("ppm", 0),
         modulation  = cfg.get("modulation", "nbfm"),
         device      = cfg.get("device", "0"),
         gain        = cfg.get("gain", "auto"),

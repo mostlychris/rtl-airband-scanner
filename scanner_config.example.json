@@ -5,6 +5,7 @@
   "modulation": "nbfm",
   "squelch": 70,
   "squelch_rms": 0.003,
+  "squelch_hold": 2.0,
   "ppm": 0,
   "channels": {
     "446.000": "GMRS 1",
