@@ -383,7 +383,7 @@ class RTLFMScanner:
 
     def __init__(self, name: str, channels: dict[str, str],
                  squelch: int = 70, ppm: int = 0, modulation: str = "nbfm",
-                 device: str = "0",
+                 device: str = "0", gain: str = "auto",
                  on_event=None, on_audio=None):
         self.name       = name
         self.channels   = channels
@@ -392,6 +392,7 @@ class RTLFMScanner:
         self.ppm        = ppm
         self.modulation = modulation
         self.device     = str(device)
+        self.gain       = str(gain)
         self._on_event  = on_event
         self._on_audio  = on_audio
 
@@ -463,8 +464,10 @@ class RTLFMScanner:
             "-r", str(AUDIO_RATE),   # output PCM rate
             "-p", str(self.ppm),
             "-d", self.device,       # device index or serial number
-            "-",                     # write PCM to stdout
         ]
+        if self.gain.lower() != "auto":
+            cmd += ["-g", self.gain] # manual tuner gain in dB (omit for AGC)
+        cmd += ["-"]                 # write PCM to stdout
         print(f"[Scanner] {' '.join(cmd)}")
 
         proc = subprocess.Popen(
@@ -481,10 +484,12 @@ class RTLFMScanner:
                 text = line.decode("utf-8", errors="replace").strip()
                 if text:
                     print(f"[rtl_fm] {text}")
-                m = re.search(r"Tuned to (\d+) Hz", text)
+                # Match "Tuned to 446000000 Hz" or "446.000 MHz" etc.
+                m = re.search(r"Tuned to ([\d.]+)\s*(MHz|kHz|Hz)", text, re.IGNORECASE)
                 if m:
-                    hz = int(m.group(1))
-                    # snap to nearest configured frequency within 150 kHz
+                    val  = float(m.group(1))
+                    unit = m.group(2).lower()
+                    hz   = val * {"hz": 1, "khz": 1e3, "mhz": 1e6}[unit]
                     closest = min(self.frequencies, key=lambda f: abs(f - hz / 1e6))
                     if abs(closest - hz / 1e6) < 0.15:
                         cur_freq_mhz[0] = closest
@@ -516,6 +521,10 @@ class RTLFMScanner:
                 if active:
                     last_sig_t = time.time()
                     freq_mhz   = cur_freq_mhz[0]
+                    # If stderr hasn't told us the frequency yet, fall back to
+                    # the only configured frequency (or skip display entirely).
+                    if freq_mhz is None and len(self.frequencies) == 1:
+                        freq_mhz = self.frequencies[0]
                     if freq_mhz is not None:
                         freq_str = f"{freq_mhz:.3f}"
                         with self._lock:
@@ -726,6 +735,7 @@ def main():
         ppm        = cfg.get("ppm", 0),
         modulation = cfg.get("modulation", "nbfm"),
         device     = cfg.get("device", "0"),
+        gain       = cfg.get("gain", "auto"),
         on_event   = _emit,
         on_audio   = _audio_cb,
     )

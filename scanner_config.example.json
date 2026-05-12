@@ -1,6 +1,7 @@
 {
   "name": "Scanner",
   "device": "0",
+  "gain": "auto",
   "modulation": "nbfm",
   "squelch": 70,
   "ppm": 0,
