@@ -11,7 +11,6 @@ Setup:
 from __future__ import annotations
 
 import re, json, struct, socket, asyncio, threading, argparse, shutil, uvicorn
-from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime
 from collections import deque
@@ -628,19 +627,22 @@ def _state() -> dict:
     }
 
 
-# ── Lifespan ───────────────────────────────────────────────────────────────────
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+app = FastAPI()
+
+
+@app.on_event("startup")
+async def _startup():
     global _evq, _evloop
     _evloop = asyncio.get_running_loop()
     _evq    = asyncio.Queue()
     asyncio.create_task(_bcast_loop())
     for m in monitors: m.start()
-    yield
+    print("Monitors started")
+
+
+@app.on_event("shutdown")
+async def _shutdown():
     for m in monitors: m.stop()
-
-
-app = FastAPI(lifespan=lifespan)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
