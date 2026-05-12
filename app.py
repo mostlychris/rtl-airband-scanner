@@ -382,15 +382,17 @@ class RTLFMScanner:
     def __init__(self, name: str, channels: dict[str, str],
                  squelch: int = 70, squelch_rms: float = 0.003,
                  squelch_hold: float = 2.0,
+                 channel_squelch: dict[str, float] | None = None,
                  ppm: int = 0, modulation: str = "nbfm",
                  device: str = "0", gain: str = "auto",
                  on_event=None, on_audio=None):
-        self.name         = name
-        self.channels     = channels
-        self.frequencies  = sorted(float(f) for f in channels)
-        self.squelch      = squelch
-        self.squelch_rms  = squelch_rms   # Python-side threshold (0.0–1.0)
-        self.squelch_hold = squelch_hold  # seconds before clearing inactive freq
+        self.name           = name
+        self.channels       = channels
+        self.frequencies    = sorted(float(f) for f in channels)
+        self.squelch        = squelch
+        self.squelch_rms    = squelch_rms    # default Python-side threshold (0.0–1.0)
+        self.squelch_hold   = squelch_hold   # seconds before clearing inactive freq
+        self.channel_squelch = channel_squelch or {}  # per-freq overrides
         self.ppm          = ppm
         self.modulation   = modulation
         self.device       = str(device)
@@ -500,9 +502,11 @@ class RTLFMScanner:
 
         self.connected = True
         self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
+        overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         print(f"[Scanner] started — {len(self.frequencies)} frequencies, "
               f"squelch={self.squelch}, squelch_rms={self.squelch_rms}, "
-              f"squelch_hold={self.squelch_hold}s, mod={self.modulation}")
+              f"squelch_hold={self.squelch_hold}s, mod={self.modulation}"
+              + (f", per-channel: {overrides}" if overrides else ""))
 
         CHUNK = int(AUDIO_RATE * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
         squelch_open = False
@@ -514,9 +518,14 @@ class RTLFMScanner:
                 if not data:
                     break
 
-                rms    = self._rms(data)
-                active = rms > self.squelch_rms
-                db     = 20.0 * np.log10(max(rms, 1e-9))
+                rms  = self._rms(data)
+                db   = 20.0 * np.log10(max(rms, 1e-9))
+
+                freq_mhz     = cur_freq_mhz[0]
+                freq_str_cur = f"{freq_mhz:.3f}" if freq_mhz is not None else None
+                threshold    = self.channel_squelch.get(freq_str_cur, self.squelch_rms) \
+                               if freq_str_cur else self.squelch_rms
+                active       = rms > threshold
 
                 self._emit({"type": "signal", "mount": "sdr",
                             "db": round(db, 1), "active": active})
@@ -731,18 +740,31 @@ def main():
     else:
         print(f"Warning: {config_path} not found — using defaults")
 
+    # Parse channels: supports "freq": "label" or "freq": {"label": "...", "squelch_rms": 0.056}
+    raw_channels    = cfg.get("channels", {"446.000": "446.000"})
+    channels        : dict[str, str]   = {}
+    channel_squelch : dict[str, float] = {}
+    for freq, val in raw_channels.items():
+        if isinstance(val, dict):
+            channels[freq] = val.get("label", freq)
+            if "squelch_rms" in val:
+                channel_squelch[freq] = float(val["squelch_rms"])
+        else:
+            channels[freq] = str(val)
+
     scanner = RTLFMScanner(
-        name         = cfg.get("name", "Scanner"),
-        channels     = cfg.get("channels", {"446.000": "446.000"}),
-        squelch      = cfg.get("squelch", 70),
-        squelch_rms  = cfg.get("squelch_rms", 0.003),
-        squelch_hold = cfg.get("squelch_hold", 2.0),
-        ppm          = cfg.get("ppm", 0),
-        modulation  = cfg.get("modulation", "nbfm"),
-        device      = cfg.get("device", "0"),
-        gain        = cfg.get("gain", "auto"),
-        on_event    = _emit,
-        on_audio    = _audio_cb,
+        name            = cfg.get("name", "Scanner"),
+        channels        = channels,
+        squelch         = cfg.get("squelch", 70),
+        squelch_rms     = cfg.get("squelch_rms", 0.003),
+        squelch_hold    = cfg.get("squelch_hold", 2.0),
+        channel_squelch = channel_squelch,
+        ppm             = cfg.get("ppm", 0),
+        modulation      = cfg.get("modulation", "nbfm"),
+        device          = cfg.get("device", "0"),
+        gain            = cfg.get("gain", "auto"),
+        on_event        = _emit,
+        on_audio        = _audio_cb,
     )
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")

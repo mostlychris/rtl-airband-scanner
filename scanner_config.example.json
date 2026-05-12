@@ -4,17 +4,17 @@
   "gain": "auto",
   "modulation": "nbfm",
   "squelch": 70,
-  "squelch_rms": 0.003,
+  "squelch_rms": 0.032,
   "squelch_hold": 2.0,
   "ppm": 0,
   "channels": {
-    "446.000": "GMRS 1",
-    "444.100": "444.100",
-    "443.700": "443.700",
-    "443.950": "443.950",
-    "462.550": "GMRS 8",
-    "462.625": "GMRS 9",
-    "451.500": "451.500",
-    "464.500": "464.500"
+    "446.000": {"label": "GMRS 1",  "squelch_rms": 0.056},
+    "444.100": {"label": "444.100", "squelch_rms": 0.032},
+    "443.700": {"label": "443.700", "squelch_rms": 0.032},
+    "443.950": {"label": "443.950", "squelch_rms": 0.032},
+    "462.550": {"label": "GMRS 8",  "squelch_rms": 0.032},
+    "462.625": {"label": "GMRS 9",  "squelch_rms": 0.032},
+    "451.500": {"label": "451.500", "squelch_rms": 0.056},
+    "464.500": {"label": "464.500", "squelch_rms": 0.056}
   }
 }
