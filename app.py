@@ -20,14 +20,17 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-AUDIO_RATE    = 25000   # PCM output rate; must match -r flag passed to rtl_fm
-RTL_SAMP_RATE = 250000  # capture rate passed to rtl_fm via -s
+AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
 
-# rtl_fm tunes hardware to (target + RTL_HW_OFFSET) to avoid the DC spike.
-# offset = hardware_rate / 4, where hardware_rate = RTL_SAMP_RATE * oversample
-# and oversample = (1_000_000 // RTL_SAMP_RATE) + 1  (matches rtl_fm source)
-_rtl_oversample = (1_000_000 // RTL_SAMP_RATE) + 1          # = 5  for 250 kHz
-RTL_HW_OFFSET   = (RTL_SAMP_RATE * _rtl_oversample) // 4    # = 312 500 Hz
+
+def _rtl_hw_offset(samp_rate: int) -> int:
+    """
+    rtl_fm tunes hardware to (target + offset) to keep the signal away from DC.
+    offset = hardware_rate / 4, hardware_rate = samp_rate * oversample,
+    oversample = (1_000_000 // samp_rate) + 1   (matches rtl_fm source).
+    """
+    oversample = (1_000_000 // samp_rate) + 1
+    return (samp_rate * oversample) // 4
 
 # Silence chunk sent to audio WebSocket clients every 5 s when no signal is
 # active — keeps the connection alive so the browser never needs to re-enable.
@@ -400,8 +403,9 @@ class RTLFMScanner:
                  squelch: int = 70, squelch_rms: float = 0.003,
                  squelch_hold: float = 2.0,
                  channel_squelch: dict[str, float] | None = None,
-                 ppm: int = 0, modulation: str = "nbfm",
+                 ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
+                 samp_rate: int = 250000,
                  debug: bool = False,
                  on_event=None, on_audio=None):
         self.name            = name
@@ -416,6 +420,8 @@ class RTLFMScanner:
         self.modulation   = modulation
         self.device       = str(device)
         self.gain         = str(gain)
+        self.samp_rate    = samp_rate
+        self.hw_offset    = _rtl_hw_offset(samp_rate)
         self._on_event  = on_event
         self._on_audio  = on_audio
 
@@ -483,7 +489,7 @@ class RTLFMScanner:
         cmd += [
             "-M", self.modulation,
             "-l", str(self.squelch),
-            "-s", str(RTL_SAMP_RATE), # capture rate (RTL-SDR hardware)
+            "-s", str(self.samp_rate), # capture rate (RTL-SDR hardware)
             "-r", str(AUDIO_RATE),   # output PCM rate
             "-p", str(self.ppm),
             "-d", self.device,       # device index or serial number
@@ -515,7 +521,7 @@ class RTLFMScanner:
                     hz   = val * {"hz": 1, "khz": 1e3, "mhz": 1e6}[unit]
                     # Subtract rtl_fm's DC-avoidance offset to get the actual
                     # scan target, then match to our configured frequencies.
-                    target_mhz = (hz - RTL_HW_OFFSET) / 1e6
+                    target_mhz = (hz - self.hw_offset) / 1e6
                     closest = min(self.frequencies, key=lambda f: abs(f - target_mhz))
                     if abs(closest - target_mhz) < 0.05:   # 50 kHz tolerance
                         cur_freq_mhz[0] = closest
@@ -531,7 +537,8 @@ class RTLFMScanner:
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         print(f"[Scanner] started — {len(self.frequencies)} frequencies, "
               f"squelch={self.squelch}, squelch_rms={self.squelch_rms}, "
-              f"squelch_hold={self.squelch_hold}s, mod={self.modulation}"
+              f"squelch_hold={self.squelch_hold}s, mod={self.modulation}, "
+              f"samp_rate={self.samp_rate}, hw_offset={self.hw_offset}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
         CHUNK = int(AUDIO_RATE * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
@@ -804,9 +811,10 @@ def main():
         squelch_hold    = cfg.get("squelch_hold", 2.0),
         channel_squelch = channel_squelch,
         ppm             = cfg.get("ppm", 0),
-        modulation      = cfg.get("modulation", "nbfm"),
+        modulation      = cfg.get("modulation", "fm"),
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
+        samp_rate       = cfg.get("samp_rate", 250000),
         debug           = args.debug,
         on_event        = _emit,
         on_audio        = _audio_cb,

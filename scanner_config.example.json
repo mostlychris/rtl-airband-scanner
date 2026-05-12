@@ -2,11 +2,12 @@
   "name": "Scanner",
   "device": "0",
   "gain": "auto",
-  "modulation": "nbfm",
+  "modulation": "fm",
   "squelch": 70,
   "squelch_rms": 0.032,
   "squelch_hold": 2.0,
   "ppm": 0,
+  "samp_rate": 50000,
   "channels": {
     "446.000": {"label": "GMRS 1",  "squelch_rms": 0.056},
     "444.100": {"label": "444.100", "squelch_rms": 0.032},
