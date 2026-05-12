@@ -17,20 +17,23 @@ active frequency in real time, and shows a live display in your SSH terminal.
 
 ## Requirements
 
-- Raspberry Pi (or any Linux box) running RTLSDR-Airband
+- Raspberry Pi running RTLSDR-Airband
 - An Icecast server receiving the RTLSDR-Airband output
 - `send_scan_freq_tags = true` in each Icecast output block in `rtl_airband.conf`
+- Python 3.9+
 
-## Installation
+## Installation (Pi)
 
 ```bash
-sudo apt install ffmpeg python3-pip
-pip3 install rich
+pip3 install fastapi "uvicorn[standard]"
 git clone https://github.com/mostlychris/rtl-airband-scanner.git
 cd rtl-airband-scanner
 cp scanner_config.example.json scanner_config.json
-# Edit scanner_config.json with your Icecast server IP and channel labels
+nano scanner_config.json      # set host IP and add channel labels
+python3 app.py
 ```
+
+Then open **http://\<pi-ip\>:8080** in any browser on your network.
 
 ## Configuration
 
@@ -44,7 +47,7 @@ Copy `scanner_config.example.json` to `scanner_config.json` and fill in:
 | `streams[].name` | Display name shown in the UI |
 | `streams[].channels` | Map of `"frequency": "label"` pairs |
 
-Channel labels are optional — if omitted the app auto-detects the active frequency
+Channel labels are optional — if omitted the active frequency is auto-detected
 from the ICY stream title.
 
 ### RTLSDR-Airband config snippet
@@ -66,25 +69,17 @@ outputs:(
 ## Usage
 
 ```bash
-# Use scanner_config.json (recommended)
-python3 scanner.py
-
-# Override host/mounts on the command line
-python3 scanner.py --host 192.168.1.100 --mount /ham.mp3 --mount /air.mp3
-
-# Display only — audio handled by RTLSDR-Airband PulseAudio (default)
-python3 scanner.py
-
-# Let Python handle audio via PulseAudio (disable rtl_airband pulse output first)
-python3 scanner.py --audio
+python3 app.py                          # default port 8080
+python3 app.py --listen-port 9000       # custom port
+python3 app.py --config /path/to/cfg.json
 ```
 
-## Audio
+## How it works
 
-By default the scanner is **display only** — audio continues through the
-existing RTLSDR-Airband → PulseAudio path.
-
-Pass `--audio` to have Python route the Icecast audio through `ffmpeg` →
-PulseAudio instead. This gives tighter control over buffering but you must
-disable the corresponding `pulse` output in `rtl_airband.conf` first to avoid
-hearing every transmission twice.
+- **Frequency detection** — the Pi connects to each Icecast stream and reads
+  the ICY `StreamTitle` metadata (updated by RTLSDR-Airband when squelch opens).
+- **Real-time UI** — a WebSocket pushes every channel change to the browser instantly.
+- **Audio** — the browser connects to `/audio/<mount>` on the Pi; Python proxies
+  the Icecast stream directly with no re-encoding. Click the audio button in the
+  browser to start; the player auto-switches to whichever stream just became active.
+  Click a stream card to lock audio to that stream.
