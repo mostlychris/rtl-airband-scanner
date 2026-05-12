@@ -1,21 +1,36 @@
 #!/usr/bin/env python3
 """
-RTL-Airband Scanner — Web App
-Run on the Raspberry Pi; open http://<pi-ip>:8080 in any browser.
+RTL-Airband Scanner — direct RTL-SDR mode.
+No RTLSDR-Airband or Icecast required.
 
-Setup:
-    pip install fastapi "uvicorn[standard]"
-    sudo apt install ffmpeg
+Install:
+    sudo apt install librtlsdr-dev
+    pip install pyrtlsdr numpy scipy fastapi "uvicorn[standard]"
+    cp scanner_config.example.json scanner_config.json
+    nano scanner_config.json
     python3 app.py
 """
 from __future__ import annotations
 
-import re, json, struct, socket, asyncio, threading, argparse, uvicorn
+import json, asyncio, threading, argparse, uvicorn
+import numpy as np
+import scipy.signal
 from pathlib import Path
 from datetime import datetime
 from collections import deque
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+
+try:
+    from rtlsdr import RtlSdr
+    HAS_RTLSDR = True
+except ImportError:
+    HAS_RTLSDR = False
+
+# RTL-SDR capture rate and audio output rate
+SDR_RATE   = 250_000
+DECIMATE   = 10
+AUDIO_RATE = SDR_RATE // DECIMATE   # 25000 Hz
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -51,7 +66,6 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .scard.locked{border-color:var(--blue)}
 .shdr{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .sname{font-weight:600;font-size:13px}
-.smount{font-size:11px;color:var(--muted);font-family:var(--mono);margin-left:2px}
 .sconn{margin-left:auto;font-size:11px}
 .sconn.ok{color:var(--green)}.sconn.err{color:var(--red)}.sconn.warn{color:var(--yellow)}
 .serr{font-size:11px;color:var(--red);padding:6px 14px;background:rgba(248,81,73,.08);border-bottom:1px solid rgba(248,81,73,.2)}
@@ -75,6 +89,9 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .as{color:var(--muted);width:96px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .af{font-family:var(--mono);font-weight:600;width:82px;flex-shrink:0}
 .al{color:var(--muted);flex:1}
+.sqbar{height:4px;background:var(--card2);border-radius:2px;margin:6px 14px 10px;overflow:hidden}
+.sqfill{height:100%;background:var(--muted);border-radius:2px;transition:width .1s,background .1s;width:0%}
+.sqfill.active{background:var(--green)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200}
 .overlay.hidden{display:none}
 .obox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 36px;text-align:center;max-width:400px}
@@ -115,9 +132,9 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 <div class="overlay hidden" id="overlay">
   <div class="obox">
     <h2>🔊 Enable Audio?</h2>
-    <p>Audio plays natively in your browser, proxied from the Icecast stream.<br>
-       The player auto-follows whichever stream becomes active.<br>
-       Click a stream card to lock it to one source.</p>
+    <p>Audio is demodulated on the Pi and streamed as PCM over WebSocket.<br>
+       Latency is typically under 1 second.<br>
+       Click a stream card to lock audio to that stream.</p>
     <button class="obtn" onclick="enableAudio()">Enable Audio</button>
     <button class="obtn skip" onclick="closeOverlay()">Display Only</button>
   </div>
@@ -128,25 +145,54 @@ const S = { streams:{}, playing:null, audioOn:false, locked:null };
 let ws, wsRetry=0;
 let actItems = [];
 
-// ── Audio (HTML5 native playback via HTTP proxy) ───────────────────────────────
-let audEl    = null;   // <Audio> element
-let audMount = null;   // which mount is feeding audEl
+// ── Audio (Web Audio API, PCM via WebSocket) ───────────────────────────────────
+let PCM_RATE  = 25000;   // overridden by state message audio_rate field
+let actx      = null;
+let audWs     = null;
+let audMount  = null;
+let nextAt    = 0;
+
+function initAudioCtx() {
+  if (actx) return;
+  actx = new AudioContext({ latencyHint: 'interactive' });
+}
 
 function openAudioStream(mount) {
-  if (audMount === mount && audEl && !audEl.paused) return;
-  closeAudio();
+  if (audWs && audWs.readyState === WebSocket.OPEN) return;
+  if (audWs) { audWs.close(); audWs = null; }
   audMount = mount;
-  audEl = new Audio('/audio' + mount);
-  audEl.preload = 'none';
-  audEl.onended = () => updateAudioUI();
-  audEl.onerror = () => updateAudioUI();
-  audEl.play().catch(() => {});
-  updateAudioUI();
+  nextAt   = 0;
+  initAudioCtx();
+  if (actx.state === 'suspended') actx.resume();
+
+  audWs = new WebSocket('ws://' + location.host + '/ws/audio');
+  audWs.binaryType = 'arraybuffer';
+  audWs.onopen  = () => updateAudioUI();
+  audWs.onclose = audWs.onerror = () => { audMount = null; nextAt = 0; updateAudioUI(); };
+
+  const MAX_QUEUE = 1.5;   // seconds — drop chunks beyond this
+  audWs.onmessage = ({ data }) => {
+    if (!actx) return;
+    if (actx.state === 'suspended') { actx.resume(); return; }
+    if (actx.state !== 'running') return;
+    const now = actx.currentTime;
+    if (nextAt > now + MAX_QUEUE) return;
+    const s16 = new Int16Array(data);
+    const buf = actx.createBuffer(1, s16.length, PCM_RATE);
+    const ch  = buf.getChannelData(0);
+    for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
+    const src = actx.createBufferSource();
+    src.buffer = buf; src.connect(actx.destination);
+    if (nextAt < now + 0.05) nextAt = now + 0.05;
+    src.start(nextAt);
+    nextAt += buf.duration;
+  };
 }
 
 function closeAudio() {
-  if (audEl) { audEl.pause(); audEl.src = ''; audEl = null; }
-  audMount = null;
+  if (audWs) { audWs.close(); audWs = null; }
+  audMount = null; nextAt = 0;
+  if (actx) { actx.close(); actx = null; }
 }
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
@@ -164,6 +210,7 @@ function setWsSt(ok) {
 // ── Message handler ────────────────────────────────────────────────────────────
 function onMsg(m) {
   if (m.type === 'state') {
+    if (m.audio_rate) PCM_RATE = m.audio_rate;
     m.streams.forEach(s => {
       S.streams[s.mount] = s;
       (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
@@ -183,6 +230,12 @@ function onMsg(m) {
     s.activeFreq  = null;
     s.activeSince = null;
     updateCard(m.mount);
+  } else if (m.type === 'signal') {
+    const d = document.getElementById('sqfill_' + eid(m.mount));
+    if (!d) return;
+    const pct = Math.min(100, Math.max(0, (m.db + 60) * 100 / 40));
+    d.style.width = pct + '%';
+    d.className = 'sqfill' + (m.active ? ' active' : '');
   } else if (m.type === 'conn') {
     const s = S.streams[m.mount]; if (!s) return;
     s.connected = m.connected;
@@ -217,47 +270,47 @@ function cardClass(s) {
 }
 function cardHtml(s) {
   const connHtml = s.connected
-    ? '<span class="sconn ok">● live</span>'
-    : '<span class="sconn err">○ connecting…</span>';
+    ? '<span class="sconn ok">● scanning</span>'
+    : '<span class="sconn err">○ ' + (s.lastError ? 'error' : 'opening…') + '</span>';
   const spk = (audMount===s.mount && S.audioOn)
     ? ' <span class="blink" style="color:var(--green);font-size:10px">🔊</span>' : '';
   const lockBadge = S.locked===s.mount
     ? ' <span style="font-size:10px;color:var(--blue)">🔒 locked</span>' : '';
-
   const errHtml = s.lastError
-    ? `<div class="serr">⚠ ${s.lastError}</div>` : '';
+    ? '<div class="serr">⚠ ' + s.lastError + '</div>' : '';
 
   const chs   = s.channels || {};
-  const freqs = Object.keys(chs).sort();
+  const freqs = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
   let rows = '';
   if (freqs.length) {
     freqs.forEach(f => {
       const lbl = chs[f] || ''; const act = f === s.activeFreq;
       const since = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
-      rows += `<div class="ch${act?' active':''}">
-        <span class="ch-dot">${act?'◉':'○'}</span>
-        <span class="ch-f">${f}</span>
-        <span class="ch-l">${lbl!==f?lbl:''}</span>
-        <span class="ch-t">${since}</span>
-      </div>`;
+      rows += '<div class="ch' + (act?' active':'') + '">'
+        + '<span class="ch-dot">' + (act?'◉':'○') + '</span>'
+        + '<span class="ch-f">' + f + '</span>'
+        + '<span class="ch-l">' + (lbl!==f?lbl:'') + '</span>'
+        + '<span class="ch-t">' + since + '</span>'
+        + '</div>';
     });
   } else if (s.activeFreq) {
-    rows = `<div class="ch active">
-      <span class="ch-dot">◉</span>
-      <span class="ch-f">${s.activeFreq}</span>
-      <span class="ch-l" style="font-style:italic;color:var(--muted)">auto-detected</span>
-      <span class="ch-t">${s.activeSince?new Date(s.activeSince).toLocaleTimeString():''}</span>
-    </div>`;
+    rows = '<div class="ch active">'
+      + '<span class="ch-dot">◉</span>'
+      + '<span class="ch-f">' + s.activeFreq + '</span>'
+      + '<span class="ch-l" style="font-style:italic;color:var(--muted)">detected</span>'
+      + '<span class="ch-t">' + (s.activeSince?new Date(s.activeSince).toLocaleTimeString():'') + '</span>'
+      + '</div>';
   } else {
-    rows = '<div class="noch">No activity yet</div>';
+    rows = '<div class="noch">Scanning…</div>';
   }
   const hintTxt = S.locked===s.mount ? 'Click to unlock' : 'Click to lock audio here';
-  return `<div class="shdr">
-    <span class="sname">${s.name}${spk}${lockBadge}</span>
-    <span class="smount">${s.mount}</span>
-    ${connHtml}
-  </div>${errHtml}<div class="chlist">${rows}</div>
-  <div class="hint">${hintTxt}</div>`;
+  return '<div class="shdr">'
+    + '<span class="sname">' + s.name + spk + lockBadge + '</span>'
+    + connHtml
+    + '</div>' + errHtml
+    + '<div class="chlist">' + rows + '</div>'
+    + '<div class="sqbar"><div class="sqfill" id="sqfill_' + eid(s.mount) + '"></div></div>'
+    + '<div class="hint">' + hintTxt + '</div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
 
@@ -266,11 +319,11 @@ function pushActivity(name, freq, label, iso) {
   actItems.unshift({ t: new Date(iso).toLocaleTimeString(), name, freq, label: label||'' });
   actItems = actItems.slice(0, 30);
   document.getElementById('actlist').innerHTML = actItems.map(a =>
-    `<div class="arow">
-      <span class="at">${a.t}</span><span class="as">${a.name}</span>
-      <span class="af">${a.freq} MHz</span>
-      <span class="al">${a.label!==a.freq?a.label:''}</span>
-    </div>`).join('');
+    '<div class="arow">'
+    + '<span class="at">' + a.t + '</span><span class="as">' + a.name + '</span>'
+    + '<span class="af">' + a.freq + ' MHz</span>'
+    + '<span class="al">' + (a.label!==a.freq?a.label:'') + '</span>'
+    + '</div>').join('');
 }
 
 // ── Audio controls ─────────────────────────────────────────────────────────────
@@ -309,7 +362,7 @@ function closeOverlay() { document.getElementById('overlay').classList.add('hidd
 function updateAudioUI() {
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
-  const connected = audEl && !audEl.error && !audEl.ended && !audEl.paused;
+  const connected = audWs && audWs.readyState === WebSocket.OPEN;
   if (S.audioOn && audMount) {
     const s = S.streams[audMount];
     btn.className = 'abtn on';
@@ -332,134 +385,35 @@ setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 
 </html>
 """
 
-# ── IcyStream ──────────────────────────────────────────────────────────────────
-class IcyStream:
-    RECV_SIZE = 2048
+# ── SDR Scanner ────────────────────────────────────────────────────────────────
+class SDRScanner:
+    SCAN_DWELL   = 0.08    # seconds per frequency when no signal
+    ACTIVE_DWELL = 0.25    # seconds per audio chunk when signal is present
+    SQUELCH_HOLD = 3.0     # seconds to hold active freq after signal drops
 
-    def __init__(self, host: str, port: int, mount: str):
-        self.host          = host
-        self.port          = port
-        self.mount         = mount
-        self.metaint       = 0
-        self.current_title    = ""
-        self.title_changed_at = 0.0   # time.time() when title last changed
-        self._sock            = None
-        self._closed          = False
+    def __init__(self, name: str, channels: dict[str, str],
+                 gain='auto', ppm: int = 0, squelch_db: float = -35,
+                 on_event=None, on_audio=None):
+        self.name        = name
+        self.channels    = channels
+        self.frequencies = sorted(float(f) for f in channels)
+        self.gain        = gain
+        self.ppm         = ppm
+        self.squelch_db  = squelch_db
+        self._on_event   = on_event
+        self._on_audio   = on_audio
 
-    def connect(self) -> dict:
-        self._sock = socket.create_connection((self.host, self.port), timeout=10)
-        self._sock.settimeout(30)
-        req = "\r\n".join([
-            f"GET {self.mount} HTTP/1.0",
-            f"Host: {self.host}:{self.port}",
-            "User-Agent: RTLAirbandScanner/1.0",
-            "Icy-MetaData: 1",
-            "Connection: close", "", ""
-        ])
-        self._sock.sendall(req.encode())
-        raw = b""
-        while b"\r\n\r\n" not in raw:
-            b = self._sock.recv(1)
-            if not b:
-                raise ConnectionError("Server closed during handshake")
-            raw += b
-        headers = {}
-        for line in raw.decode("utf-8", errors="replace").splitlines():
-            if ":" in line:
-                k, _, v = line.partition(":")
-                headers[k.strip().lower()] = v.strip()
-        self.metaint = int(headers.get("icy-metaint", 0))
-        return headers
-
-    def _recv_exact(self, n: int) -> bytes:
-        buf = bytearray()
-        while len(buf) < n:
-            chunk = self._sock.recv(n - len(buf))
-            if not chunk:
-                raise EOFError("Stream ended")
-            buf.extend(chunk)
-        return bytes(buf)
-
-    def _read_meta(self):
-        import time as _t
-        length = struct.unpack("B", self._recv_exact(1))[0] * 16
-        if length:
-            raw = self._recv_exact(length).decode("utf-8", errors="replace").rstrip("\x00")
-            m = re.search(r"StreamTitle='([^']*)'", raw)
-            if m:
-                title = m.group(1)
-                if title != self.current_title:
-                    self.current_title    = title
-                    self.title_changed_at = _t.time()
-
-    def iter_audio(self):
-        if not self.metaint:
-            while not self._closed:
-                try:
-                    data = self._sock.recv(self.RECV_SIZE)
-                except Exception:
-                    break
-                if not data:
-                    break
-                yield data
-            return
-        remaining = self.metaint
-        while not self._closed:
-            to_read = min(self.RECV_SIZE, remaining)
-            try:
-                data = self._sock.recv(to_read)
-            except Exception:
-                break
-            if not data:
-                break
-            yield data
-            remaining -= len(data)
-            if remaining <= 0:
-                try:
-                    self._read_meta()
-                except Exception:
-                    break
-                remaining = self.metaint
-
-    def close(self):
-        self._closed = True
-        if self._sock:
-            try:
-                self._sock.close()
-            except Exception:
-                pass
-
-
-# ── StreamMonitor ──────────────────────────────────────────────────────────────
-def _match_title(title: str, channels: dict) -> str | None:
-    if not title:
-        return None
-    for freq, label in channels.items():
-        if freq in title or (label and label in title):
-            return freq
-    m = re.search(r"(\d{2,3}\.\d{1,4})", title)
-    return m.group(1) if m else None
-
-
-class StreamMonitor:
-    RECONNECT = 5
-
-    def __init__(self, name: str, host: str, port: int, mount: str,
-                 channels: dict, on_event=None):
-        self.name      = name
-        self.host      = host
-        self.port      = port
-        self.mount     = mount
-        self.channels  = channels
-        self._on_event = on_event
-
-        self._stream       = None
+        self._running      = False
+        self._lock         = threading.Lock()
         self._active_freq  = None
         self._active_since = None
-        self._history: deque = deque(maxlen=20)
-        self._lock         = threading.Lock()
-        self._running      = False
+        self._history      = deque(maxlen=20)
         self.connected     = False
+        self.last_error: str | None = None
+
+        # Pre-compute 5 kHz low-pass filter for NFM voice
+        nyq = SDR_RATE / 2
+        self._lpf = scipy.signal.butter(5, 5000 / nyq, output='sos')
 
     @property
     def active_freq(self):
@@ -475,79 +429,133 @@ class StreamMonitor:
 
     def start(self):
         self._running = True
-        threading.Thread(target=self._loop, daemon=True,
-                         name=f"mon-{self.mount}").start()
+        threading.Thread(target=self._loop, daemon=True, name="sdr").start()
 
     def stop(self):
         self._running = False
-        if self._stream: self._stream.close()
 
-    def _emit(self, event: dict):
-        if self._on_event: self._on_event(event)
+    def _emit(self, evt: dict):
+        if self._on_event: self._on_event(evt)
+
+    def _emit_audio(self, pcm: bytes):
+        if self._on_audio: self._on_audio(pcm)
+
+    def _demod(self, iq: np.ndarray) -> np.ndarray:
+        """FM discriminator → LPF → decimate → float32 in [-1, 1]."""
+        d  = iq[1:] * np.conj(iq[:-1])
+        fm = np.angle(d).astype(np.float32)
+        fm = scipy.signal.sosfilt(self._lpf, fm)
+        audio = fm[::DECIMATE]
+        peak = float(np.max(np.abs(audio)))
+        if peak > 1e-6:
+            audio = (audio / peak * 0.85).astype(np.float32)
+        return np.clip(audio, -1.0, 1.0)
+
+    @staticmethod
+    def _db(iq: np.ndarray) -> float:
+        rms = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
+        return 20.0 * np.log10(max(rms, 1e-9))
 
     def _loop(self):
         import time
-        last_error: str | None = None
         while self._running:
             self.connected = False
-            self._emit({"type": "conn", "mount": self.mount,
-                        "connected": False, "error": last_error})
-
-            self._stream = IcyStream(self.host, self.port, self.mount)
-            try:
-                self._stream.connect()
-            except Exception as exc:
-                last_error = str(exc)
-                print(f"[{self.name}] connect failed: {last_error}")
-                self._emit({
-                    "type": "conn", "mount": self.mount,
-                    "connected": False, "error": last_error,
-                })
-                time.sleep(self.RECONNECT)
+            self.last_error = None
+            self._emit({"type": "conn", "mount": "sdr", "connected": False, "error": None})
+            if not HAS_RTLSDR:
+                msg = "pyrtlsdr not installed — run: pip install pyrtlsdr"
+                self.last_error = msg
+                print(f"[SDR] {msg}")
+                self._emit({"type": "conn", "mount": "sdr",
+                            "connected": False, "error": msg})
+                time.sleep(30)
                 continue
+            try:
+                sdr = RtlSdr()
+                sdr.sample_rate    = SDR_RATE
+                sdr.gain           = self.gain
+                sdr.freq_correction = self.ppm
+                self.connected = True
+                self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
+                print(f"[SDR] opened — {len(self.frequencies)} frequencies, "
+                      f"gain={self.gain}, squelch={self.squelch_db} dB")
+                self._scan(sdr)
+            except Exception as exc:
+                self.last_error = str(exc)
+                print(f"[SDR] error: {exc}")
+                self._emit({"type": "conn", "mount": "sdr",
+                            "connected": False, "error": str(exc)})
+                time.sleep(5)
+            finally:
+                try: sdr.close()
+                except Exception: pass
 
-            last_error = None
-            self.connected = True
-            self._emit({"type": "conn", "mount": self.mount,
-                        "connected": True, "error": None})
+    def _scan(self, sdr):
+        import time
+        scan_n   = int(SDR_RATE * self.SCAN_DWELL)
+        active_n = int(SDR_RATE * self.ACTIVE_DWELL)
 
-            print(f"[{self.name}] connected, metaint={self._stream.metaint}")
-            SQUELCH_TIMEOUT = 30  # seconds before clearing an inactive frequency
-            _last_title      = ""
-            _squelch_cleared = False  # True after timeout-clear; prevents stale title re-firing
-            for chunk in self._stream.iter_audio():
-                if not self._running: break
-                if self._stream.current_title != _last_title:
-                    _last_title      = self._stream.current_title
-                    _squelch_cleared = False  # new title from RTLSDR-Airband — ready to match again
-                    print(f"[{self.name}] title: {_last_title!r}")
-                freq = _match_title(self._stream.current_title, self.channels)
-                title_age = time.time() - self._stream.title_changed_at
-                with self._lock:
-                    if freq and freq != self._active_freq and not _squelch_cleared:
-                        self._active_freq  = freq
-                        self._active_since = datetime.now()
-                        label = self.channels.get(freq, "")
-                        self._history.appendleft((datetime.now(), freq, label))
-                        self._emit({
-                            "type": "freq_change", "mount": self.mount,
-                            "name": self.name, "freq": freq, "label": label,
-                            "time": datetime.now().isoformat(),
-                        })
-                    elif self._active_freq and (
-                        not freq or title_age > SQUELCH_TIMEOUT
-                    ):
+        freq_idx     = 0
+        squelch_open = False
+        last_sig_t   = 0.0
+        cur_mhz      = None
+
+        while self._running:
+            freq_mhz = self.frequencies[freq_idx % len(self.frequencies)]
+            freq_hz  = int(freq_mhz * 1e6)
+
+            if sdr.center_freq != freq_hz:
+                sdr.center_freq = freq_hz
+                time.sleep(0.015)   # let PLL settle
+
+            n = active_n if (squelch_open and cur_mhz == freq_mhz) else scan_n
+            try:
+                iq = np.array(sdr.read_samples(n))
+            except Exception as exc:
+                print(f"[SDR] read_samples: {exc}")
+                break
+
+            db     = self._db(iq)
+            active = db > self.squelch_db
+
+            # Broadcast signal level for the bar graph
+            self._emit({"type": "signal", "mount": "sdr", "db": round(db, 1),
+                        "active": active})
+
+            if active:
+                last_sig_t = time.time()
+                if not squelch_open or cur_mhz != freq_mhz:
+                    squelch_open = True
+                    cur_mhz      = freq_mhz
+                    freq_str = f"{freq_mhz:.3f}"
+                    label    = self.channels.get(freq_str, freq_str)
+                    now      = datetime.now()
+                    with self._lock:
+                        self._active_freq  = freq_str
+                        self._active_since = now
+                        self._history.appendleft((now, freq_str, label))
+                    print(f"[SDR] active: {freq_str} MHz  ({db:.1f} dB)")
+                    self._emit({
+                        "type":  "freq_change", "mount": "sdr",
+                        "name":  self.name, "freq": freq_str, "label": label,
+                        "time":  now.isoformat(),
+                    })
+
+                audio = self._demod(iq)
+                self._emit_audio((audio * 32767).astype(np.int16).tobytes())
+
+            else:
+                if squelch_open and time.time() - last_sig_t > self.SQUELCH_HOLD:
+                    squelch_open = False
+                    cur_mhz      = None
+                    with self._lock:
                         self._active_freq  = None
                         self._active_since = None
-                        _squelch_cleared   = True
-                        self._emit({"type": "freq_clear", "mount": self.mount})
+                    print("[SDR] squelch closed")
+                    self._emit({"type": "freq_clear", "mount": "sdr"})
 
-            if self._running:
-                self.connected = False
-                self._emit({"type": "conn", "mount": self.mount,
-                            "connected": False, "error": "Stream ended"})
-                print(f"[{self.name}] stream ended, reconnecting in {self.RECONNECT}s")
-                time.sleep(self.RECONNECT)
+                if not squelch_open:
+                    freq_idx += 1
 
 
 # ── WebSocket manager ──────────────────────────────────────────────────────────
@@ -578,16 +586,27 @@ class WsManager:
 
 
 # ── App state ──────────────────────────────────────────────────────────────────
-monitors: list[StreamMonitor]           = []
-cfg:      dict                          = {}
-wsman:    WsManager                     = WsManager()
-_evq:     asyncio.Queue | None          = None
+scanner:  SDRScanner | None                = None
+wsman:    WsManager                        = WsManager()
+_evq:     asyncio.Queue | None             = None
 _evloop:  asyncio.AbstractEventLoop | None = None
+_audio_clients: list[asyncio.Queue]       = []
 
 
 def _emit(event: dict):
     if _evloop and _evq:
         asyncio.run_coroutine_threadsafe(_evq.put(event), _evloop)
+
+
+def _audio_cb(pcm: bytes):
+    if _evloop and _audio_clients:
+        asyncio.run_coroutine_threadsafe(_dispatch_audio(pcm), _evloop)
+
+
+async def _dispatch_audio(pcm: bytes):
+    for q in list(_audio_clients):
+        try: q.put_nowait(pcm)
+        except asyncio.QueueFull: pass
 
 
 async def _bcast_loop():
@@ -597,27 +616,25 @@ async def _bcast_loop():
 
 
 def _state() -> dict:
+    s = scanner
     return {
-        "type": "state",
-        "streams": [
-            {
-                "mount":      m.mount,
-                "name":       m.name,
-                "connected":  m.connected,
-                "activeFreq": m.active_freq,
-                "activeSince": m.active_since.isoformat() if m.active_since else None,
-                "history": [
-                    {"time": ts.isoformat(), "freq": f, "label": lb}
-                    for ts, f, lb in m.history[:10]
-                ],
-                "channels": m.channels,
-                "lastError": None,
-            }
-            for m in monitors
-        ],
+        "type":       "state",
+        "audio_rate": AUDIO_RATE,
+        "streams": [{
+            "mount":      "sdr",
+            "name":       s.name,
+            "connected":  s.connected,
+            "activeFreq": s.active_freq,
+            "activeSince": s.active_since.isoformat() if s.active_since else None,
+            "history": [{"time": t.isoformat(), "freq": f, "label": lb}
+                        for t, f, lb in s.history[:10]],
+            "channels":  s.channels,
+            "lastError": s.last_error,
+        }],
     }
 
 
+# ── FastAPI app ────────────────────────────────────────────────────────────────
 app = FastAPI()
 
 
@@ -627,16 +644,15 @@ async def _startup():
     _evloop = asyncio.get_running_loop()
     _evq    = asyncio.Queue()
     asyncio.create_task(_bcast_loop())
-    for m in monitors: m.start()
-    print("Monitors started")
+    scanner.start()
+    print("SDR Scanner started")
 
 
 @app.on_event("shutdown")
 async def _shutdown():
-    for m in monitors: m.stop()
+    if scanner: scanner.stop()
 
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return PAGE
@@ -645,60 +661,27 @@ async def index():
 @app.get("/debug")
 async def debug():
     return {
-        "monitors": [
-            {"name": m.name, "mount": m.mount,
-             "connected": m.connected, "active_freq": m.active_freq}
-            for m in monitors
-        ],
+        "connected":  scanner.connected if scanner else None,
+        "active_freq": scanner.active_freq if scanner else None,
+        "audio_clients": len(_audio_clients),
         "queue_size": _evq.qsize() if _evq else -1,
     }
 
 
-@app.get("/audio/{mount_path:path}")
-async def audio_proxy(mount_path: str, request: Request):
-    """Proxy the Icecast MP3 stream so the browser can play it natively."""
-    host  = cfg.get("host", "localhost")
-    port  = cfg.get("port", 8000)
-    mount = "/" + mount_path.lstrip("/")
-
-    async def _gen():
-        try:
-            reader, writer = await asyncio.open_connection(host, port)
-        except Exception:
-            return
-        try:
-            writer.write((
-                f"GET {mount} HTTP/1.0\r\n"
-                f"Host: {host}:{port}\r\n"
-                "Icy-MetaData: 0\r\n"
-                "Connection: close\r\n\r\n"
-            ).encode())
-            await writer.drain()
-            # skip HTTP response headers
-            while True:
-                line = await asyncio.wait_for(reader.readline(), timeout=10.0)
-                if line in (b"\r\n", b"\n", b""):
-                    break
-            # stream body to browser
-            while True:
-                data = await asyncio.wait_for(reader.read(4096), timeout=30.0)
-                if not data:
-                    break
-                yield data
-        except Exception:
-            return
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-
-    return StreamingResponse(
-        _gen(),
-        media_type="audio/mpeg",
-        headers={"Cache-Control": "no-cache"},
-    )
+@app.websocket("/ws/audio")
+async def audio_ws(ws: WebSocket):
+    await ws.accept()
+    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
+    _audio_clients.append(q)
+    try:
+        while True:
+            data = await asyncio.wait_for(q.get(), timeout=10.0)
+            await ws.send_bytes(data)
+    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):
+        pass
+    finally:
+        try: _audio_clients.remove(q)
+        except ValueError: pass
 
 
 @app.websocket("/ws")
@@ -708,10 +691,8 @@ async def ws_endpoint(ws: WebSocket):
     async def _keepalive():
         while True:
             await asyncio.sleep(25)
-            try:
-                await ws.send_text(json.dumps({"type": "ping"}))
-            except Exception:
-                return
+            try: await ws.send_text(json.dumps({"type": "ping"}))
+            except Exception: return
 
     ka = asyncio.create_task(_keepalive())
     try:
@@ -730,38 +711,31 @@ DEFAULT_CONFIG = Path(__file__).parent / "scanner_config.json"
 
 
 def main():
-    global cfg, monitors
+    global scanner
 
-    p = argparse.ArgumentParser(description="RTL-Airband Scanner Web App")
-    p.add_argument("--config",       default=str(DEFAULT_CONFIG))
-    p.add_argument("--listen-port",  type=int, default=8080)
+    p = argparse.ArgumentParser(description="RTL-Airband Scanner (direct SDR mode)")
+    p.add_argument("--config",      default=str(DEFAULT_CONFIG))
+    p.add_argument("--listen-port", type=int, default=8080)
     args = p.parse_args()
 
+    cfg: dict = {}
     config_path = Path(args.config)
     if config_path.exists():
         with open(config_path) as f:
             cfg = json.load(f)
-        print(f"Config loaded: {config_path}")
+        print(f"Config: {config_path}")
     else:
         print(f"Warning: {config_path} not found — using defaults")
 
-    host     = cfg.get("host",    "172.31.10.192")
-    port     = cfg.get("port",    8000)
-    channels = cfg.get("channels", {})
-    streams  = cfg.get("streams", [
-        {"mount": "/ham.mp3", "name": "Ham / GMRS"},
-        {"mount": "/air.mp3", "name": "Air Traffic"},
-    ])
-
-    monitors = [
-        StreamMonitor(
-            name=s.get("name", Path(s["mount"]).stem),
-            host=host, port=port, mount=s["mount"],
-            channels=s.get("channels", channels),
-            on_event=_emit,
-        )
-        for s in streams
-    ]
+    scanner = SDRScanner(
+        name       = cfg.get("name", "Scanner"),
+        channels   = cfg.get("channels", {"446.000": "446.000"}),
+        gain       = cfg.get("gain", "auto"),
+        ppm        = cfg.get("ppm", 0),
+        squelch_db = cfg.get("squelch_db", -35),
+        on_event   = _emit,
+        on_audio   = _audio_cb,
+    )
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")
     uvicorn.run(app, host="0.0.0.0", port=args.listen_port, log_level="warning")
