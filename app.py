@@ -385,14 +385,16 @@ class RTLFMScanner:
                  channel_squelch: dict[str, float] | None = None,
                  ppm: int = 0, modulation: str = "nbfm",
                  device: str = "0", gain: str = "auto",
+                 debug: bool = False,
                  on_event=None, on_audio=None):
-        self.name           = name
-        self.channels       = channels
-        self.frequencies    = sorted(float(f) for f in channels)
-        self.squelch        = squelch
-        self.squelch_rms    = squelch_rms    # default Python-side threshold (0.0–1.0)
-        self.squelch_hold   = squelch_hold   # seconds before clearing inactive freq
+        self.name            = name
+        self.channels        = channels
+        self.frequencies     = sorted(float(f) for f in channels)
+        self.squelch         = squelch
+        self.squelch_rms     = squelch_rms    # default Python-side threshold (0.0–1.0)
+        self.squelch_hold    = squelch_hold   # seconds before clearing inactive freq
         self.channel_squelch = channel_squelch or {}  # per-freq overrides
+        self.debug           = debug
         self.ppm          = ppm
         self.modulation   = modulation
         self.device       = str(device)
@@ -523,9 +525,26 @@ class RTLFMScanner:
 
                 freq_mhz     = cur_freq_mhz[0]
                 freq_str_cur = f"{freq_mhz:.3f}" if freq_mhz is not None else None
+                per_ch       = freq_str_cur in self.channel_squelch if freq_str_cur else False
                 threshold    = self.channel_squelch.get(freq_str_cur, self.squelch_rms) \
                                if freq_str_cur else self.squelch_rms
                 active       = rms > threshold
+
+                if self.debug:
+                    thr_src = f"ch[{freq_str_cur}]" if per_ch else "global"
+                    sq_state = "open" if squelch_open else "shut"
+                    hold_rem = max(0.0, self.squelch_hold - (time.time() - last_sig_t))
+                    if active:
+                        if freq_str_cur is None:
+                            print(f"[dbg] ??? MHz  {db:+.1f} dB  thr={threshold:.4f}({thr_src})"
+                                  f"  ABOVE — no freq identified, bar green, nothing logged")
+                        else:
+                            print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
+                                  f"  thr={threshold:.4f}({thr_src})  ABOVE  sq={sq_state}")
+                    elif squelch_open:
+                        print(f"[dbg] {freq_str_cur or '???'} MHz  {db:+.1f} dB"
+                              f"  thr={threshold:.4f}({thr_src})  below  sq={sq_state}"
+                              f"  hold={hold_rem:.1f}s remain")
 
                 self._emit({"type": "signal", "mount": "sdr",
                             "db": round(db, 1), "active": active})
@@ -553,6 +572,8 @@ class RTLFMScanner:
                                     "name":  self.name, "freq": freq_str, "label": label,
                                     "time":  now.isoformat(),
                                 })
+                    elif self.debug:
+                        print(f"[dbg] active but freq unknown — audio emitted as noise")
                     self._emit_audio(data)
 
                 else:
@@ -729,6 +750,8 @@ def main():
     p = argparse.ArgumentParser(description="RTL-Airband Scanner")
     p.add_argument("--config",      default=str(DEFAULT_CONFIG))
     p.add_argument("--listen-port", type=int, default=8080)
+    p.add_argument("--debug",       action="store_true",
+                   help="Log every chunk above threshold: freq, dB, threshold source, squelch state")
     args = p.parse_args()
 
     cfg: dict = {}
@@ -763,6 +786,7 @@ def main():
         modulation      = cfg.get("modulation", "nbfm"),
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
+        debug           = args.debug,
         on_event        = _emit,
         on_audio        = _audio_cb,
     )
