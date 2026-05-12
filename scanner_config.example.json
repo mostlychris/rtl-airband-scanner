@@ -1,8 +1,8 @@
 {
   "name": "Scanner",
-  "gain": "auto",
+  "modulation": "nbfm",
+  "squelch": 70,
   "ppm": 0,
-  "squelch_db": -35,
   "channels": {
     "446.000": "GMRS 1",
     "444.100": "444.100",

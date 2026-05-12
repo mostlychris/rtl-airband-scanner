@@ -1,36 +1,26 @@
 #!/usr/bin/env python3
 """
-RTL-Airband Scanner — direct RTL-SDR mode.
-No RTLSDR-Airband or Icecast required.
+RTL-Airband Scanner — rtl_fm subprocess mode.
+No RTLSDR-Airband, Icecast, or pyrtlsdr required.
 
 Install:
-    sudo apt install librtlsdr-dev
-    pip install pyrtlsdr numpy scipy fastapi "uvicorn[standard]"
+    sudo apt install rtl-sdr python3-numpy
+    pip install fastapi "uvicorn[standard]"
     cp scanner_config.example.json scanner_config.json
     nano scanner_config.json
     python3 app.py
 """
 from __future__ import annotations
 
-import json, asyncio, threading, argparse, uvicorn
+import re, json, asyncio, threading, argparse, subprocess, shutil, uvicorn
 import numpy as np
-import scipy.signal
 from pathlib import Path
 from datetime import datetime
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-try:
-    from rtlsdr import RtlSdr
-    HAS_RTLSDR = True
-except ImportError:
-    HAS_RTLSDR = False
-
-# RTL-SDR capture rate and audio output rate
-SDR_RATE   = 250_000
-DECIMATE   = 10
-AUDIO_RATE = SDR_RATE // DECIMATE   # 25000 Hz
+AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -81,6 +71,9 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .ch-t{font-size:11px;color:var(--muted);font-family:var(--mono);flex-shrink:0}
 .noch{padding:14px;color:var(--muted);font-size:12px;text-align:center}
 .hint{padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)}
+.sqbar{height:4px;background:var(--card2);border-radius:2px;margin:0 14px 10px;overflow:hidden}
+.sqfill{height:100%;background:var(--muted);border-radius:2px;transition:width .15s,background .15s;width:0%}
+.sqfill.active{background:var(--green)}
 .acard{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
 .ahdr{padding:10px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
 .arow{display:flex;align-items:center;gap:14px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px}
@@ -89,9 +82,6 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .as{color:var(--muted);width:96px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .af{font-family:var(--mono);font-weight:600;width:82px;flex-shrink:0}
 .al{color:var(--muted);flex:1}
-.sqbar{height:4px;background:var(--card2);border-radius:2px;margin:6px 14px 10px;overflow:hidden}
-.sqfill{height:100%;background:var(--muted);border-radius:2px;transition:width .1s,background .1s;width:0%}
-.sqfill.active{background:var(--green)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200}
 .overlay.hidden{display:none}
 .obox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 36px;text-align:center;max-width:400px}
@@ -146,7 +136,7 @@ let ws, wsRetry=0;
 let actItems = [];
 
 // ── Audio (Web Audio API, PCM via WebSocket) ───────────────────────────────────
-let PCM_RATE  = 25000;   // overridden by state message audio_rate field
+let PCM_RATE  = 25000;
 let actx      = null;
 let audWs     = null;
 let audMount  = null;
@@ -170,7 +160,7 @@ function openAudioStream(mount) {
   audWs.onopen  = () => updateAudioUI();
   audWs.onclose = audWs.onerror = () => { audMount = null; nextAt = 0; updateAudioUI(); };
 
-  const MAX_QUEUE = 1.5;   // seconds — drop chunks beyond this
+  const MAX_QUEUE = 1.5;
   audWs.onmessage = ({ data }) => {
     if (!actx) return;
     if (actx.state === 'suspended') { actx.resume(); return; }
@@ -304,10 +294,8 @@ function cardHtml(s) {
     rows = '<div class="noch">Scanning…</div>';
   }
   const hintTxt = S.locked===s.mount ? 'Click to unlock' : 'Click to lock audio here';
-  return '<div class="shdr">'
-    + '<span class="sname">' + s.name + spk + lockBadge + '</span>'
-    + connHtml
-    + '</div>' + errHtml
+  return '<div class="shdr"><span class="sname">' + s.name + spk + lockBadge + '</span>'
+    + connHtml + '</div>' + errHtml
     + '<div class="chlist">' + rows + '</div>'
     + '<div class="sqbar"><div class="sqfill" id="sqfill_' + eid(s.mount) + '"></div></div>'
     + '<div class="hint">' + hintTxt + '</div>';
@@ -319,11 +307,9 @@ function pushActivity(name, freq, label, iso) {
   actItems.unshift({ t: new Date(iso).toLocaleTimeString(), name, freq, label: label||'' });
   actItems = actItems.slice(0, 30);
   document.getElementById('actlist').innerHTML = actItems.map(a =>
-    '<div class="arow">'
-    + '<span class="at">' + a.t + '</span><span class="as">' + a.name + '</span>'
+    '<div class="arow"><span class="at">' + a.t + '</span><span class="as">' + a.name + '</span>'
     + '<span class="af">' + a.freq + ' MHz</span>'
-    + '<span class="al">' + (a.label!==a.freq?a.label:'') + '</span>'
-    + '</div>').join('');
+    + '<span class="al">' + (a.label!==a.freq?a.label:'') + '</span></div>').join('');
 }
 
 // ── Audio controls ─────────────────────────────────────────────────────────────
@@ -385,23 +371,27 @@ setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 
 </html>
 """
 
-# ── SDR Scanner ────────────────────────────────────────────────────────────────
-class SDRScanner:
-    SCAN_DWELL   = 0.08    # seconds per frequency when no signal
-    ACTIVE_DWELL = 0.25    # seconds per audio chunk when signal is present
-    SQUELCH_HOLD = 3.0     # seconds to hold active freq after signal drops
+# ── Scanner (rtl_fm subprocess) ────────────────────────────────────────────────
+class RTLFMScanner:
+    """
+    Runs rtl_fm in scan mode, reads raw PCM from stdout, parses stderr for
+    frequency info, and detects squelch via RMS level.
+    """
+    SQUELCH_HOLD      = 3.0    # seconds to keep freq_change active after signal drops
+    RMS_THRESHOLD     = 0.008  # Python-side squelch: ~-42 dB FS
+    CHUNK_SECS        = 0.1    # seconds of audio per processing chunk
 
     def __init__(self, name: str, channels: dict[str, str],
-                 gain='auto', ppm: int = 0, squelch_db: float = -35,
+                 squelch: int = 70, ppm: int = 0, modulation: str = "nbfm",
                  on_event=None, on_audio=None):
-        self.name        = name
-        self.channels    = channels
+        self.name       = name
+        self.channels   = channels
         self.frequencies = sorted(float(f) for f in channels)
-        self.gain        = gain
-        self.ppm         = ppm
-        self.squelch_db  = squelch_db
-        self._on_event   = on_event
-        self._on_audio   = on_audio
+        self.squelch    = squelch
+        self.ppm        = ppm
+        self.modulation = modulation
+        self._on_event  = on_event
+        self._on_audio  = on_audio
 
         self._running      = False
         self._lock         = threading.Lock()
@@ -410,10 +400,6 @@ class SDRScanner:
         self._history      = deque(maxlen=20)
         self.connected     = False
         self.last_error: str | None = None
-
-        # Pre-compute 5 kHz low-pass filter for NFM voice
-        nyq = SDR_RATE / 2
-        self._lpf = scipy.signal.butter(5, 5000 / nyq, output='sos')
 
     @property
     def active_freq(self):
@@ -429,7 +415,7 @@ class SDRScanner:
 
     def start(self):
         self._running = True
-        threading.Thread(target=self._loop, daemon=True, name="sdr").start()
+        threading.Thread(target=self._loop, daemon=True, name="scanner").start()
 
     def stop(self):
         self._running = False
@@ -440,21 +426,10 @@ class SDRScanner:
     def _emit_audio(self, pcm: bytes):
         if self._on_audio: self._on_audio(pcm)
 
-    def _demod(self, iq: np.ndarray) -> np.ndarray:
-        """FM discriminator → LPF → decimate → float32 in [-1, 1]."""
-        d  = iq[1:] * np.conj(iq[:-1])
-        fm = np.angle(d).astype(np.float32)
-        fm = scipy.signal.sosfilt(self._lpf, fm)
-        audio = fm[::DECIMATE]
-        peak = float(np.max(np.abs(audio)))
-        if peak > 1e-6:
-            audio = (audio / peak * 0.85).astype(np.float32)
-        return np.clip(audio, -1.0, 1.0)
-
     @staticmethod
-    def _db(iq: np.ndarray) -> float:
-        rms = float(np.sqrt(np.mean(np.abs(iq) ** 2)))
-        return 20.0 * np.log10(max(rms, 1e-9))
+    def _rms(data: bytes) -> float:
+        s = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        return float(np.sqrt(np.mean(s ** 2))) if len(s) else 0.0
 
     def _loop(self):
         import time
@@ -462,100 +437,114 @@ class SDRScanner:
             self.connected = False
             self.last_error = None
             self._emit({"type": "conn", "mount": "sdr", "connected": False, "error": None})
-            if not HAS_RTLSDR:
-                msg = "pyrtlsdr not installed — run: pip install pyrtlsdr"
-                self.last_error = msg
-                print(f"[SDR] {msg}")
-                self._emit({"type": "conn", "mount": "sdr",
-                            "connected": False, "error": msg})
-                time.sleep(30)
-                continue
             try:
-                sdr = RtlSdr()
-                sdr.sample_rate    = SDR_RATE
-                sdr.gain           = self.gain
-                sdr.freq_correction = self.ppm
-                self.connected = True
-                self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
-                print(f"[SDR] opened — {len(self.frequencies)} frequencies, "
-                      f"gain={self.gain}, squelch={self.squelch_db} dB")
-                self._scan(sdr)
+                self._run()
             except Exception as exc:
                 self.last_error = str(exc)
-                print(f"[SDR] error: {exc}")
+                print(f"[Scanner] error: {exc}")
                 self._emit({"type": "conn", "mount": "sdr",
                             "connected": False, "error": str(exc)})
-                time.sleep(5)
-            finally:
-                try: sdr.close()
-                except Exception: pass
+            time.sleep(5)
 
-    def _scan(self, sdr):
+    def _run(self):
         import time
-        scan_n   = int(SDR_RATE * self.SCAN_DWELL)
-        active_n = int(SDR_RATE * self.ACTIVE_DWELL)
+        if not shutil.which("rtl_fm"):
+            raise RuntimeError("rtl_fm not found — sudo apt install rtl-sdr")
 
-        freq_idx     = 0
+        cmd = ["rtl_fm"]
+        for mhz in self.frequencies:
+            cmd += ["-f", f"{mhz:.3f}M"]
+        cmd += [
+            "-M", self.modulation,
+            "-l", str(self.squelch),
+            "-s", "250000",          # capture rate (RTL-SDR hardware)
+            "-r", str(AUDIO_RATE),   # output PCM rate
+            "-p", str(self.ppm),
+            "-",                     # write PCM to stdout
+        ]
+        print(f"[Scanner] {' '.join(cmd)}")
+
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        # Parse stderr for "Tuned to X Hz" to know the current frequency
+        cur_freq_mhz: list[float | None] = [None]
+
+        def _read_stderr():
+            for line in proc.stderr:
+                text = line.decode("utf-8", errors="replace").strip()
+                if text:
+                    print(f"[rtl_fm] {text}")
+                m = re.search(r"Tuned to (\d+) Hz", text)
+                if m:
+                    hz = int(m.group(1))
+                    # snap to nearest configured frequency within 150 kHz
+                    closest = min(self.frequencies, key=lambda f: abs(f - hz / 1e6))
+                    if abs(closest - hz / 1e6) < 0.15:
+                        cur_freq_mhz[0] = closest
+
+        threading.Thread(target=_read_stderr, daemon=True).start()
+
+        self.connected = True
+        self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
+        print(f"[Scanner] started — {len(self.frequencies)} frequencies, "
+              f"squelch={self.squelch}, mod={self.modulation}")
+
+        CHUNK = int(AUDIO_RATE * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
         squelch_open = False
         last_sig_t   = 0.0
-        cur_mhz      = None
 
-        while self._running:
-            freq_mhz = self.frequencies[freq_idx % len(self.frequencies)]
-            freq_hz  = int(freq_mhz * 1e6)
+        try:
+            while self._running:
+                data = proc.stdout.read(CHUNK)
+                if not data:
+                    break
 
-            if sdr.center_freq != freq_hz:
-                sdr.center_freq = freq_hz
-                time.sleep(0.015)   # let PLL settle
+                rms    = self._rms(data)
+                active = rms > self.RMS_THRESHOLD
+                db     = 20.0 * np.log10(max(rms, 1e-9))
 
-            n = active_n if (squelch_open and cur_mhz == freq_mhz) else scan_n
+                self._emit({"type": "signal", "mount": "sdr",
+                            "db": round(db, 1), "active": active})
+
+                if active:
+                    last_sig_t = time.time()
+                    freq_mhz   = cur_freq_mhz[0]
+                    if freq_mhz is not None:
+                        freq_str = f"{freq_mhz:.3f}"
+                        with self._lock:
+                            if not squelch_open or self._active_freq != freq_str:
+                                squelch_open = True
+                                now   = datetime.now()
+                                label = self.channels.get(freq_str, freq_str)
+                                self._active_freq  = freq_str
+                                self._active_since = now
+                                self._history.appendleft((now, freq_str, label))
+                                print(f"[Scanner] active: {freq_str} MHz  ({db:.1f} dB)")
+                                self._emit({
+                                    "type":  "freq_change", "mount": "sdr",
+                                    "name":  self.name, "freq": freq_str, "label": label,
+                                    "time":  now.isoformat(),
+                                })
+                    self._emit_audio(data)
+
+                else:
+                    if squelch_open and time.time() - last_sig_t > self.SQUELCH_HOLD:
+                        with self._lock:
+                            squelch_open      = False
+                            self._active_freq  = None
+                            self._active_since = None
+                        print("[Scanner] squelch closed")
+                        self._emit({"type": "freq_clear", "mount": "sdr"})
+        finally:
             try:
-                iq = np.array(sdr.read_samples(n))
-            except Exception as exc:
-                print(f"[SDR] read_samples: {exc}")
-                break
-
-            db     = self._db(iq)
-            active = db > self.squelch_db
-
-            # Broadcast signal level for the bar graph
-            self._emit({"type": "signal", "mount": "sdr", "db": round(db, 1),
-                        "active": active})
-
-            if active:
-                last_sig_t = time.time()
-                if not squelch_open or cur_mhz != freq_mhz:
-                    squelch_open = True
-                    cur_mhz      = freq_mhz
-                    freq_str = f"{freq_mhz:.3f}"
-                    label    = self.channels.get(freq_str, freq_str)
-                    now      = datetime.now()
-                    with self._lock:
-                        self._active_freq  = freq_str
-                        self._active_since = now
-                        self._history.appendleft((now, freq_str, label))
-                    print(f"[SDR] active: {freq_str} MHz  ({db:.1f} dB)")
-                    self._emit({
-                        "type":  "freq_change", "mount": "sdr",
-                        "name":  self.name, "freq": freq_str, "label": label,
-                        "time":  now.isoformat(),
-                    })
-
-                audio = self._demod(iq)
-                self._emit_audio((audio * 32767).astype(np.int16).tobytes())
-
-            else:
-                if squelch_open and time.time() - last_sig_t > self.SQUELCH_HOLD:
-                    squelch_open = False
-                    cur_mhz      = None
-                    with self._lock:
-                        self._active_freq  = None
-                        self._active_since = None
-                    print("[SDR] squelch closed")
-                    self._emit({"type": "freq_clear", "mount": "sdr"})
-
-                if not squelch_open:
-                    freq_idx += 1
+                proc.terminate()
+                proc.wait(timeout=3)
+            except Exception:
+                proc.kill()
 
 
 # ── WebSocket manager ──────────────────────────────────────────────────────────
@@ -586,11 +575,11 @@ class WsManager:
 
 
 # ── App state ──────────────────────────────────────────────────────────────────
-scanner:  SDRScanner | None                = None
-wsman:    WsManager                        = WsManager()
-_evq:     asyncio.Queue | None             = None
-_evloop:  asyncio.AbstractEventLoop | None = None
-_audio_clients: list[asyncio.Queue]       = []
+scanner: RTLFMScanner | None            = None
+wsman:   WsManager                      = WsManager()
+_evq:    asyncio.Queue | None           = None
+_evloop: asyncio.AbstractEventLoop | None = None
+_audio_clients: list[asyncio.Queue]    = []
 
 
 def _emit(event: dict):
@@ -645,7 +634,7 @@ async def _startup():
     _evq    = asyncio.Queue()
     asyncio.create_task(_bcast_loop())
     scanner.start()
-    print("SDR Scanner started")
+    print("Scanner started")
 
 
 @app.on_event("shutdown")
@@ -661,10 +650,10 @@ async def index():
 @app.get("/debug")
 async def debug():
     return {
-        "connected":  scanner.connected if scanner else None,
-        "active_freq": scanner.active_freq if scanner else None,
+        "connected":     scanner.connected if scanner else None,
+        "active_freq":   scanner.active_freq if scanner else None,
         "audio_clients": len(_audio_clients),
-        "queue_size": _evq.qsize() if _evq else -1,
+        "queue_size":    _evq.qsize() if _evq else -1,
     }
 
 
@@ -713,7 +702,7 @@ DEFAULT_CONFIG = Path(__file__).parent / "scanner_config.json"
 def main():
     global scanner
 
-    p = argparse.ArgumentParser(description="RTL-Airband Scanner (direct SDR mode)")
+    p = argparse.ArgumentParser(description="RTL-Airband Scanner")
     p.add_argument("--config",      default=str(DEFAULT_CONFIG))
     p.add_argument("--listen-port", type=int, default=8080)
     args = p.parse_args()
@@ -727,12 +716,12 @@ def main():
     else:
         print(f"Warning: {config_path} not found — using defaults")
 
-    scanner = SDRScanner(
+    scanner = RTLFMScanner(
         name       = cfg.get("name", "Scanner"),
         channels   = cfg.get("channels", {"446.000": "446.000"}),
-        gain       = cfg.get("gain", "auto"),
+        squelch    = cfg.get("squelch", 70),
         ppm        = cfg.get("ppm", 0),
-        squelch_db = cfg.get("squelch_db", -35),
+        modulation = cfg.get("modulation", "nbfm"),
         on_event   = _emit,
         on_audio   = _audio_cb,
     )
