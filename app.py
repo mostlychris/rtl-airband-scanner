@@ -158,8 +158,13 @@ function openAudioStream(mount) {
 
   audWs.onopen = () => updateAudioUI();
 
+  const MAX_QUEUE = 0.6; // seconds — discard chunks beyond this to prevent runaway buffering
   audWs.onmessage = ({ data }) => {
     if (!actx) return;
+    if (actx.state === 'suspended') { actx.resume(); return; }
+    if (actx.state !== 'running') return;
+    const now = actx.currentTime;
+    if (nextAt > now + MAX_QUEUE) return; // too far ahead, drop this chunk
     // data is raw s16le PCM
     const s16 = new Int16Array(data);
     const buf = actx.createBuffer(1, s16.length, RATE);
@@ -168,7 +173,6 @@ function openAudioStream(mount) {
     const src = actx.createBufferSource();
     src.buffer = buf;
     src.connect(actx.destination);
-    const now = actx.currentTime;
     if (nextAt < now + 0.1) nextAt = now + 0.1;  // stay 100 ms ahead
     src.start(nextAt);
     nextAt += buf.duration;
@@ -214,6 +218,11 @@ function onMsg(m) {
     updateCard(m.mount);
     pushActivity(m.name, m.freq, m.label, m.time);
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
+  } else if (m.type === 'freq_clear') {
+    const s = S.streams[m.mount]; if (!s) return;
+    s.activeFreq  = null;
+    s.activeSince = null;
+    updateCard(m.mount);
   } else if (m.type === 'conn') {
     const s = S.streams[m.mount]; if (!s) return;
     s.connected = m.connected;
@@ -372,9 +381,10 @@ class IcyStream:
         self.port          = port
         self.mount         = mount
         self.metaint       = 0
-        self.current_title = ""
-        self._sock         = None
-        self._closed       = False
+        self.current_title    = ""
+        self.title_changed_at = 0.0   # time.time() when title last changed
+        self._sock            = None
+        self._closed          = False
 
     def connect(self) -> dict:
         self._sock = socket.create_connection((self.host, self.port), timeout=10)
@@ -411,13 +421,16 @@ class IcyStream:
         return bytes(buf)
 
     def _read_meta(self):
+        import time as _t
         length = struct.unpack("B", self._recv_exact(1))[0] * 16
         if length:
             raw = self._recv_exact(length).decode("utf-8", errors="replace").rstrip("\x00")
-            print(f"  [meta raw] {raw!r}")
             m = re.search(r"StreamTitle='([^']*)'", raw)
             if m:
-                self.current_title = m.group(1)
+                title = m.group(1)
+                if title != self.current_title:
+                    self.current_title    = title
+                    self.title_changed_at = _t.time()
 
     def iter_audio(self):
         if not self.metaint:
@@ -539,6 +552,7 @@ class StreamMonitor:
                         "connected": True, "error": None})
 
             print(f"[{self.name}] connected, metaint={self._stream.metaint}")
+            SQUELCH_TIMEOUT = 30  # seconds before clearing an inactive frequency
             _last_title = ""
             for chunk in self._stream.iter_audio():
                 if not self._running: break
@@ -546,6 +560,7 @@ class StreamMonitor:
                     _last_title = self._stream.current_title
                     print(f"[{self.name}] title: {_last_title!r}")
                 freq = _match_title(self._stream.current_title, self.channels)
+                title_age = time.time() - self._stream.title_changed_at
                 with self._lock:
                     if freq and freq != self._active_freq:
                         self._active_freq  = freq
@@ -557,6 +572,12 @@ class StreamMonitor:
                             "name": self.name, "freq": freq, "label": label,
                             "time": datetime.now().isoformat(),
                         })
+                    elif self._active_freq and (
+                        not freq or title_age > SQUELCH_TIMEOUT
+                    ):
+                        self._active_freq  = None
+                        self._active_since = None
+                        self._emit({"type": "freq_clear", "mount": self.mount})
 
             if self._running:
                 self.connected = False
@@ -689,12 +710,16 @@ async def audio_ws(ws: WebSocket, mount_path: str):
 
     proc = await asyncio.create_subprocess_exec(
         FFMPEG,
-        "-loglevel",  "quiet",
-        "-reconnect", "1", "-reconnect_streamed", "1",
-        "-i",         url,
-        "-f",         "s16le",   # raw PCM, signed 16-bit little-endian
-        "-ar",        "44100",   # sample rate the browser AudioContext expects
-        "-ac",        "1",       # mono
+        "-loglevel",        "quiet",
+        "-reconnect",       "1", "-reconnect_streamed", "1",
+        "-fflags",          "+nobuffer",
+        "-flags",           "low_delay",
+        "-analyzeduration", "0",
+        "-probesize",       "32",
+        "-i",               url,
+        "-f",               "s16le",   # raw PCM, signed 16-bit little-endian
+        "-ar",              "44100",   # sample rate the browser AudioContext expects
+        "-ac",              "1",       # mono
         "pipe:1",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.DEVNULL,
