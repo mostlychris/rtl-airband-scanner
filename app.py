@@ -20,7 +20,14 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
+AUDIO_RATE    = 25000   # PCM output rate; must match -r flag passed to rtl_fm
+RTL_SAMP_RATE = 250000  # capture rate passed to rtl_fm via -s
+
+# rtl_fm tunes hardware to (target + RTL_HW_OFFSET) to avoid the DC spike.
+# offset = hardware_rate / 4, where hardware_rate = RTL_SAMP_RATE * oversample
+# and oversample = (1_000_000 // RTL_SAMP_RATE) + 1  (matches rtl_fm source)
+_rtl_oversample = (1_000_000 // RTL_SAMP_RATE) + 1          # = 5  for 250 kHz
+RTL_HW_OFFSET   = (RTL_SAMP_RATE * _rtl_oversample) // 4    # = 312 500 Hz
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -466,7 +473,7 @@ class RTLFMScanner:
         cmd += [
             "-M", self.modulation,
             "-l", str(self.squelch),
-            "-s", "250000",          # capture rate (RTL-SDR hardware)
+            "-s", str(RTL_SAMP_RATE), # capture rate (RTL-SDR hardware)
             "-r", str(AUDIO_RATE),   # output PCM rate
             "-p", str(self.ppm),
             "-d", self.device,       # device index or serial number
@@ -496,9 +503,16 @@ class RTLFMScanner:
                     val  = float(m.group(1))
                     unit = m.group(2).lower()
                     hz   = val * {"hz": 1, "khz": 1e3, "mhz": 1e6}[unit]
-                    closest = min(self.frequencies, key=lambda f: abs(f - hz / 1e6))
-                    if abs(closest - hz / 1e6) < 0.15:
+                    # Subtract rtl_fm's DC-avoidance offset to get the actual
+                    # scan target, then match to our configured frequencies.
+                    target_mhz = (hz - RTL_HW_OFFSET) / 1e6
+                    closest = min(self.frequencies, key=lambda f: abs(f - target_mhz))
+                    if abs(closest - target_mhz) < 0.05:   # 50 kHz tolerance
                         cur_freq_mhz[0] = closest
+                        if self.debug:
+                            print(f"[dbg] tuned: hw={hz/1e6:.4f} MHz  "
+                                  f"target={target_mhz:.4f} MHz  "
+                                  f"→ matched {closest:.3f} MHz")
 
         threading.Thread(target=_read_stderr, daemon=True).start()
 
