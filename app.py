@@ -331,8 +331,9 @@ function toggleAudio() {
 function enableAudio() {
   S.audioOn = true; closeOverlay();
   autoSelect();
-  if (S.locked) switchAudio(S.locked);
-  else if (S.playing) switchAudio(S.playing);
+  const target = S.locked || S.playing
+    || (Object.values(S.streams).find(s => s.connected) || {}).mount;
+  if (target) switchAudio(target);
   updateAudioUI();
 }
 function closeOverlay() { document.getElementById('overlay').classList.add('hidden'); }
