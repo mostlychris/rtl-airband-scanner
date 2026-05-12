@@ -383,6 +383,7 @@ class RTLFMScanner:
 
     def __init__(self, name: str, channels: dict[str, str],
                  squelch: int = 70, ppm: int = 0, modulation: str = "nbfm",
+                 device: str = "0",
                  on_event=None, on_audio=None):
         self.name       = name
         self.channels   = channels
@@ -390,6 +391,7 @@ class RTLFMScanner:
         self.squelch    = squelch
         self.ppm        = ppm
         self.modulation = modulation
+        self.device     = str(device)
         self._on_event  = on_event
         self._on_audio  = on_audio
 
@@ -460,6 +462,7 @@ class RTLFMScanner:
             "-s", "250000",          # capture rate (RTL-SDR hardware)
             "-r", str(AUDIO_RATE),   # output PCM rate
             "-p", str(self.ppm),
+            "-d", self.device,       # device index or serial number
             "-",                     # write PCM to stdout
         ]
         print(f"[Scanner] {' '.join(cmd)}")
@@ -722,6 +725,7 @@ def main():
         squelch    = cfg.get("squelch", 70),
         ppm        = cfg.get("ppm", 0),
         modulation = cfg.get("modulation", "nbfm"),
+        device     = cfg.get("device", "0"),
         on_event   = _emit,
         on_audio   = _audio_cb,
     )
