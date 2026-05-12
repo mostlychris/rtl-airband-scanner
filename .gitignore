@@ -1,0 +1,10 @@
+# Keep the real config local — copy scanner_config.example.json to
+# scanner_config.json and fill in your Icecast server details.
+scanner_config.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
