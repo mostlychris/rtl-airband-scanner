@@ -524,25 +524,28 @@ class RTLFMScanner:
                 db   = 20.0 * np.log10(max(rms, 1e-9))
 
                 freq_mhz     = cur_freq_mhz[0]
+                # Single-frequency fallback: if only one channel, we always know where we are
+                if freq_mhz is None and len(self.frequencies) == 1:
+                    freq_mhz = self.frequencies[0]
                 freq_str_cur = f"{freq_mhz:.3f}" if freq_mhz is not None else None
                 per_ch       = freq_str_cur in self.channel_squelch if freq_str_cur else False
                 threshold    = self.channel_squelch.get(freq_str_cur, self.squelch_rms) \
                                if freq_str_cur else self.squelch_rms
-                active       = rms > threshold
+                # Unknown frequency with multiple channels → never active (avoids noise
+                # floor triggering the bar/audio with no useful frequency to show)
+                active       = (rms > threshold) if freq_str_cur is not None else False
 
                 if self.debug:
-                    thr_src = f"ch[{freq_str_cur}]" if per_ch else "global"
+                    thr_src  = f"ch[{freq_str_cur}]" if per_ch else "global"
                     sq_state = "open" if squelch_open else "shut"
                     hold_rem = max(0.0, self.squelch_hold - (time.time() - last_sig_t))
-                    if active:
-                        if freq_str_cur is None:
-                            print(f"[dbg] ??? MHz  {db:+.1f} dB  thr={threshold:.4f}({thr_src})"
-                                  f"  ABOVE — no freq identified, bar green, nothing logged")
-                        else:
-                            print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
-                                  f"  thr={threshold:.4f}({thr_src})  ABOVE  sq={sq_state}")
+                    if freq_str_cur is None:
+                        print(f"[dbg] ??? MHz  {db:+.1f} dB  freq unknown — inactive")
+                    elif active:
+                        print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
+                              f"  thr={threshold:.4f}({thr_src})  ABOVE  sq={sq_state}")
                     elif squelch_open:
-                        print(f"[dbg] {freq_str_cur or '???'} MHz  {db:+.1f} dB"
+                        print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
                               f"  thr={threshold:.4f}({thr_src})  below  sq={sq_state}"
                               f"  hold={hold_rem:.1f}s remain")
 
@@ -551,29 +554,20 @@ class RTLFMScanner:
 
                 if active:
                     last_sig_t = time.time()
-                    freq_mhz   = cur_freq_mhz[0]
-                    # If stderr hasn't told us the frequency yet, fall back to
-                    # the only configured frequency (or skip display entirely).
-                    if freq_mhz is None and len(self.frequencies) == 1:
-                        freq_mhz = self.frequencies[0]
-                    if freq_mhz is not None:
-                        freq_str = f"{freq_mhz:.3f}"
-                        with self._lock:
-                            if not squelch_open or self._active_freq != freq_str:
-                                squelch_open = True
-                                now   = datetime.now()
-                                label = self.channels.get(freq_str, freq_str)
-                                self._active_freq  = freq_str
-                                self._active_since = now
-                                self._history.appendleft((now, freq_str, label))
-                                print(f"[Scanner] active: {freq_str} MHz  ({db:.1f} dB)")
-                                self._emit({
-                                    "type":  "freq_change", "mount": "sdr",
-                                    "name":  self.name, "freq": freq_str, "label": label,
-                                    "time":  now.isoformat(),
-                                })
-                    elif self.debug:
-                        print(f"[dbg] active but freq unknown — audio emitted as noise")
+                    with self._lock:
+                        if not squelch_open or self._active_freq != freq_str_cur:
+                            squelch_open = True
+                            now   = datetime.now()
+                            label = self.channels.get(freq_str_cur, freq_str_cur)
+                            self._active_freq  = freq_str_cur
+                            self._active_since = now
+                            self._history.appendleft((now, freq_str_cur, label))
+                            print(f"[Scanner] active: {freq_str_cur} MHz  ({db:.1f} dB)")
+                            self._emit({
+                                "type":  "freq_change", "mount": "sdr",
+                                "name":  self.name, "freq": freq_str_cur, "label": label,
+                                "time":  now.isoformat(),
+                            })
                     self._emit_audio(data)
 
                 else:
