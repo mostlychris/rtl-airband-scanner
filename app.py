@@ -249,7 +249,7 @@ function onMsg(m) {
   } else if (m.type === 'signal') {
     const d = document.getElementById('sqfill_' + eid(m.mount));
     if (!d) return;
-    const pct = Math.min(100, Math.max(0, (m.db + 60) * 100 / 40));
+    const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
     d.style.width = pct + '%';
     d.className = 'sqfill' + (m.active ? ' active' : '');
   } else if (m.type === 'conn') {
