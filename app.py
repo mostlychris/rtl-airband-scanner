@@ -606,6 +606,22 @@ class RTLFMScanner:
               f"samp_rate={self.samp_rate}, audio_rate={self.audio_rate}, hw_offset={self.hw_offset}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
+        # Warn about frequency collisions: when rtl_fm scans frequency F it tunes
+        # the hardware to F + hw_offset.  If that lands within ±samp_rate/2 of
+        # another configured frequency G, rtl_fm will receive G while "on" F.
+        half_bw_mhz = self.samp_rate / 2 / 1e6
+        for f in self.frequencies:
+            hw_mhz = f + self.hw_offset / 1e6
+            for g in self.frequencies:
+                if g == f:
+                    continue
+                dist_khz = abs(hw_mhz - g) * 1000
+                if dist_khz < self.samp_rate / 2 / 1000:
+                    print(f"[Scanner] WARNING: scanning {f:.3f} MHz tunes hardware "
+                          f"to {hw_mhz:.3f} MHz — only {dist_khz:.0f} kHz from "
+                          f"{g:.3f} MHz (within {half_bw_mhz*1000:.0f} kHz demod window). "
+                          f"Remove one of these frequencies or change samp_rate.")
+
         CHUNK = int(self.audio_rate * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
         squelch_open  = False
         last_sig_t    = 0.0
