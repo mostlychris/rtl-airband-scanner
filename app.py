@@ -724,10 +724,14 @@ class RTLFMScanner:
                                 "time":  now.isoformat(),
                             })
 
+                    # Emit audio for every chunk while squelch is open — including
+                    # the hold window after signal drops — to avoid pulsing from
+                    # threshold crossings within a single transmission.
+                    if squelch_open:
                         pcm = (audio * 32767).astype(np.int16).tobytes()
                         self._emit_audio(pcm)
 
-                    else:
+                    if not active:
                         if squelch_open and time.time() - last_sig_t > self.squelch_hold:
                             squelch_open = False
                             with self._lock:
