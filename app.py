@@ -487,7 +487,7 @@ class RTLFMScanner:
             time.sleep(5)
 
     def _run(self):
-        import time, sys
+        import time, sys, select
 
         if not shutil.which("rtl_fm"):
             raise RuntimeError("rtl_fm not found — sudo apt install rtl-sdr")
@@ -506,6 +506,7 @@ class RTLFMScanner:
         self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
 
         scan_idx = 0
+        consecutive_failures = 0
 
         while self._running:
             freq_str  = freq_keys[scan_idx]
@@ -546,13 +547,20 @@ class RTLFMScanner:
             dwell_start  = None    # set after first PCM chunk arrives
             squelch_open = False
             last_sig_t   = 0.0
+            got_audio    = False
 
             try:
                 while self._running:
+                    ready = select.select([proc.stdout], [], [], 5.0)[0]
+                    if not ready:
+                        if self.debug:
+                            print(f"[scan] {freq_str}: rtl_fm no output for 5s, aborting")
+                        break
                     data = proc.stdout.read(CHUNK)
                     if not data:
                         break
 
+                    got_audio = True
                     if dwell_start is None:
                         dwell_start = time.time()
 
@@ -608,13 +616,24 @@ class RTLFMScanner:
             finally:
                 try:
                     proc.terminate()
-                    proc.wait(timeout=2)
-                except Exception:
+                    proc.wait(timeout=5)   # give rtl_fm time to close USB cleanly
+                except subprocess.TimeoutExpired:
                     proc.kill()
+                    proc.wait()
+
+            if got_audio:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    raise RuntimeError(
+                        f"rtl_fm produced no audio {consecutive_failures} times in a row "
+                        f"— USB device may be hung")
+                time.sleep(1.0)   # back off before retrying
 
             scan_idx = (scan_idx + 1) % n_freqs
             if n_freqs > 1 and self._running:
-                time.sleep(0.05)   # brief pause between hops for USB device to settle
+                time.sleep(0.1)   # give libusb time to release device between hops
 
 
 # ── WebSocket manager ──────────────────────────────────────────────────────────
