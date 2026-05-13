@@ -635,7 +635,8 @@ class RTLFMScanner:
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
               f"decimate×{decimate}→{self.audio_rate} Hz, "
-              f"scan_dwell={self.scan_dwell}s, squelch_rms={self.squelch_rms}"
+              f"scan_dwell={self.scan_dwell}s, squelch_hold={self.squelch_hold}s, "
+              f"squelch_rms={self.squelch_rms}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
         dev_index = int(self.device) if self.device.isdigit() else \
