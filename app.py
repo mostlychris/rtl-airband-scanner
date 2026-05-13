@@ -387,11 +387,89 @@ setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 
 </html>
 """
 
-# ── Scanner (pyrtlsdr direct) ──────────────────────────────────────────────────
+# ── librtlsdr ctypes wrapper ───────────────────────────────────────────────────
+class _RtlSdr:
+    """
+    Thin ctypes wrapper around librtlsdr.so — no pyrtlsdr package required.
+    Uses only functions present in all librtlsdr versions (avoids
+    rtlsdr_set_dithering and other symbols added in newer forks).
+    """
+
+    def __init__(self, device_index: int = 0):
+        import ctypes, ctypes.util
+        lib = None
+        for name in ("librtlsdr.so.0", "librtlsdr.so"):
+            try:
+                lib = ctypes.CDLL(name)
+                break
+            except OSError:
+                pass
+        if lib is None:
+            path = ctypes.util.find_library("rtlsdr")
+            if path:
+                lib = ctypes.CDLL(path)
+        if lib is None:
+            raise RuntimeError("librtlsdr not found — sudo apt install rtl-sdr")
+        self._lib = lib
+        self._dev = ctypes.c_void_p()
+        r = lib.rtlsdr_open(ctypes.byref(self._dev), device_index)
+        if r != 0:
+            raise RuntimeError(f"rtlsdr_open(index={device_index}) failed: {r}")
+
+    @staticmethod
+    def index_for_serial(lib_path_hint: str, serial: str) -> int:
+        import ctypes
+        lib = ctypes.CDLL(lib_path_hint)
+        n = lib.rtlsdr_get_device_count()
+        for i in range(n):
+            buf = ctypes.create_string_buffer(256)
+            lib.rtlsdr_get_device_usb_strings(i, None, None, buf)
+            if buf.value.decode(errors="replace") == serial:
+                return i
+        raise RuntimeError(f"RTL-SDR with serial '{serial}' not found")
+
+    def set_sample_rate(self, rate: int):
+        self._lib.rtlsdr_set_sample_rate(self._dev, int(rate))
+
+    def set_center_freq(self, freq: int):
+        self._lib.rtlsdr_set_center_freq(self._dev, int(freq))
+
+    def set_freq_correction(self, ppm: int):
+        self._lib.rtlsdr_set_freq_correction(self._dev, int(ppm))
+
+    def set_gain(self, gain):
+        if str(gain).lower() == "auto":
+            self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 0)
+        else:
+            self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 1)
+            self._lib.rtlsdr_set_tuner_gain(self._dev, int(float(gain) * 10))
+
+    def reset_buffer(self):
+        self._lib.rtlsdr_reset_buffer(self._dev)
+
+    def read_samples(self, num_samples: int) -> "np.ndarray":
+        import ctypes
+        n_bytes = num_samples * 2          # interleaved I + Q, 1 byte each
+        buf     = (ctypes.c_uint8 * n_bytes)()
+        n_read  = ctypes.c_int()
+        self._lib.rtlsdr_read_sync(
+            self._dev, buf, ctypes.c_int(n_bytes), ctypes.byref(n_read))
+        raw = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
+        iq  = (raw - 127.5) / 127.5
+        return (iq[::2] + 1j * iq[1::2]).astype(np.complex64)
+
+    def close(self):
+        if self._dev:
+            self._lib.rtlsdr_close(self._dev)
+            self._dev = None
+
+
+# ── Scanner ────────────────────────────────────────────────────────────────────
 class RTLFMScanner:
     """
-    Opens the RTL-SDR device once via pyrtlsdr, retuning between frequencies
-    with sdr.center_freq. FM demodulation and decimation are done in Python.
+    Opens the RTL-SDR device once via librtlsdr (ctypes), retuning between
+    frequencies with set_center_freq(). FM demodulation and decimation are
+    done in Python/numpy — no rtl_fm subprocess, no USB open/close per hop.
     """
     CHUNK_SECS = 0.1   # seconds of audio per processing chunk
 
@@ -473,7 +551,6 @@ class RTLFMScanner:
 
     def _run(self):
         import time
-        from rtlsdr import RtlSdr
 
         freq_keys = list(self.channels.keys())
         n_freqs   = len(freq_keys)
@@ -489,20 +566,20 @@ class RTLFMScanner:
         fm_scale = hw_rate / (2.0 * np.pi * 5000.0)
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
-        print(f"[Scanner] pyrtlsdr — {n_freqs} freq(s), hw_rate={hw_rate}, "
+        print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
               f"decimate×{decimate}→{self.audio_rate} Hz, "
               f"scan_dwell={self.scan_dwell}s, squelch_rms={self.squelch_rms}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
-        if self.device.isdigit():
-            sdr = RtlSdr(device_index=int(self.device))
-        else:
-            sdr = RtlSdr(serial_number=self.device)
+        dev_index = int(self.device) if self.device.isdigit() else \
+                    _RtlSdr.index_for_serial("librtlsdr.so.0", self.device)
+        sdr = _RtlSdr(device_index=dev_index)
 
         try:
-            sdr.sample_rate = hw_rate
+            sdr.set_sample_rate(hw_rate)
             sdr.set_freq_correction(self.ppm)
-            sdr.gain = 'auto' if self.gain.lower() == 'auto' else float(self.gain)
+            sdr.set_gain(self.gain)
+            sdr.reset_buffer()
 
             self.connected = True
             self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
@@ -518,7 +595,7 @@ class RTLFMScanner:
                 if self.debug:
                     print(f"[scan] → {freq_str} MHz  ({label})")
 
-                sdr.center_freq = freq_hz
+                sdr.set_center_freq(freq_hz)
                 sdr.read_samples(chunk_n)   # discard stale samples from previous tune
 
                 dwell_start  = time.time()
