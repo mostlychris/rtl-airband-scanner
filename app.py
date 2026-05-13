@@ -422,6 +422,8 @@ class RTLFMScanner:
         self.gain         = str(gain)
         self.samp_rate    = samp_rate
         self.hw_offset    = _rtl_hw_offset(samp_rate)
+        # rtl_fm can only downsample, not upsample. Output rate must be ≤ samp_rate.
+        self.audio_rate   = min(samp_rate, AUDIO_RATE)
         self._on_event  = on_event
         self._on_audio  = on_audio
 
@@ -490,7 +492,7 @@ class RTLFMScanner:
             "-M", self.modulation,
             "-l", str(self.squelch),
             "-s", str(self.samp_rate), # capture rate (RTL-SDR hardware)
-            "-r", str(AUDIO_RATE),   # output PCM rate
+            "-r", str(self.audio_rate), # output PCM rate (≤ samp_rate)
             "-p", str(self.ppm),
             "-d", self.device,       # device index or serial number
         ]
@@ -555,10 +557,10 @@ class RTLFMScanner:
         print(f"[Scanner] started — {len(self.frequencies)} frequencies, "
               f"squelch={self.squelch}, squelch_rms={self.squelch_rms}, "
               f"squelch_hold={self.squelch_hold}s, mod={self.modulation}, "
-              f"samp_rate={self.samp_rate}, hw_offset={self.hw_offset}"
+              f"samp_rate={self.samp_rate}, audio_rate={self.audio_rate}, hw_offset={self.hw_offset}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
-        CHUNK = int(AUDIO_RATE * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
+        CHUNK = int(self.audio_rate * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
         squelch_open = False
         last_sig_t   = 0.0
 
@@ -695,7 +697,7 @@ def _state() -> dict:
     s = scanner
     return {
         "type":       "state",
-        "audio_rate": AUDIO_RATE,
+        "audio_rate": s.audio_rate,
         "streams": [{
             "mount":      "sdr",
             "name":       s.name,
@@ -754,7 +756,8 @@ async def audio_ws(ws: WebSocket):
             try:
                 data = await asyncio.wait_for(q.get(), timeout=5.0)
             except asyncio.TimeoutError:
-                data = _AUDIO_KEEPALIVE   # silence — keeps connection alive
+                rate = scanner.audio_rate if scanner else AUDIO_RATE
+                data = bytes(int(rate * 2 * 0.1))   # 100 ms silence keepalive
             await ws.send_bytes(data)
     except (WebSocketDisconnect, Exception):
         pass
