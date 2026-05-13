@@ -619,19 +619,19 @@ class RTLFMScanner:
         freq_keys = list(self.channels.keys())
         n_freqs   = len(freq_keys)
 
-        # Hardware sample rate: integer multiple of audio_rate for exact decimation.
-        # Matches the rate rtl_fm would use internally (oversample × audio_rate).
-        oversample = 1_000_000 // self.audio_rate + 1
-        hw_rate    = self.audio_rate * oversample   # e.g. 1_008_000 for 24 kHz
-        decimate   = oversample
-        chunk_n    = int(hw_rate * self.CHUNK_SECS) # IQ samples per 100 ms chunk
+        # Use audio_rate directly as the hardware sample rate — same as rtl_fm -s <rate>.
+        # The RTL2832U hardware-filters to the requested bandwidth; no software decimation
+        # needed. The oversampled approach (audio_rate × 42 = 1,008,000 Hz) causes the
+        # R820T PLL to fail during the internal retune triggered by set_sample_rate on
+        # this librtlsdr version.
+        hw_rate  = self.audio_rate
+        decimate = 1
+        chunk_n  = int(hw_rate * self.CHUNK_SECS)
 
-        # FM discriminator scale: normalise to ±1.0 for ±5 kHz deviation (NFM voice).
         fm_scale = hw_rate / (2.0 * np.pi * 5000.0)
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
-        print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
-              f"decimate×{decimate}→{self.audio_rate} Hz, "
+        print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate} Hz, "
               f"scan_dwell={self.scan_dwell}s, squelch_rms={self.squelch_rms}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
