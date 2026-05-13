@@ -27,6 +27,15 @@ AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
 # active — keeps the connection alive so the browser never needs to re-enable.
 _AUDIO_KEEPALIVE = bytes(int(AUDIO_RATE * 2 * 0.1))         # 100 ms of zeros
 
+# rtl_fm prints these on every invocation — suppress them so only real errors show
+_RTLFM_NOISE = re.compile(
+    r"Found \d+ device|Using device \d+|Found .+ tuner|"
+    r"Tuner gain set|Tuner error set|Tuned to \d+|Oversampling|"
+    r"Buffer size|sample rate is|Allocating \d+|Sampling at|Output at|"
+    r"Signal caught|User cancel",
+    re.IGNORECASE,
+)
+
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -529,7 +538,7 @@ class RTLFMScanner:
             def _drain_stderr(p=proc):
                 for line in p.stderr:
                     text = line.decode("utf-8", errors="replace").strip()
-                    if text and self.debug:
+                    if text and not _RTLFM_NOISE.search(text):
                         print(f"[rtl_fm] {text}")
             threading.Thread(target=_drain_stderr, daemon=True).start()
 
