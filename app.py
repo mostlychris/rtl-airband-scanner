@@ -521,14 +521,31 @@ class RTLFMScanner:
                     hz   = val * {"hz": 1, "khz": 1e3, "mhz": 1e6}[unit]
                     # Subtract rtl_fm's DC-avoidance offset to get the actual
                     # scan target, then match to our configured frequencies.
+                    # Try with offset first; if no match within tolerance, also
+                    # try raw (no-offset) in case this rtl_fm build prints the
+                    # pre-offset target frequency instead of the hardware frequency.
                     target_mhz = (hz - self.hw_offset) / 1e6
                     closest = min(self.frequencies, key=lambda f: abs(f - target_mhz))
-                    if abs(closest - target_mhz) < 0.05:   # 50 kHz tolerance
+                    delta = abs(closest - target_mhz)
+                    if delta >= 0.05:
+                        # Fallback: try treating the reported frequency as the target (no offset)
+                        raw_mhz  = hz / 1e6
+                        closest2 = min(self.frequencies, key=lambda f: abs(f - raw_mhz))
+                        delta2   = abs(closest2 - raw_mhz)
+                        if delta2 < delta:
+                            target_mhz = raw_mhz
+                            closest    = closest2
+                            delta      = delta2
+                    if delta < 0.05:   # 50 kHz tolerance
                         cur_freq_mhz[0] = closest
                         if self.debug:
                             print(f"[dbg] tuned: hw={hz/1e6:.4f} MHz  "
                                   f"target={target_mhz:.4f} MHz  "
                                   f"→ matched {closest:.3f} MHz")
+                    elif self.debug:
+                        print(f"[dbg] tuned: hw={hz/1e6:.4f} MHz  "
+                              f"target={target_mhz:.4f} MHz  "
+                              f"→ NO MATCH (closest={closest:.3f}, Δ={delta*1000:.0f} kHz)")
 
         threading.Thread(target=_read_stderr, daemon=True).start()
 
