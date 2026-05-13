@@ -484,8 +484,8 @@ class RTLFMScanner:
             raise RuntimeError("rtl_fm not found — sudo apt install rtl-sdr")
 
         cmd = ["rtl_fm"]
-        for mhz in self.frequencies:
-            cmd += ["-f", f"{mhz:.3f}M"]
+        for freq_str in self.channels:   # preserve config order — user controls scan priority
+            cmd += ["-f", f"{float(freq_str):.3f}M"]
         cmd += [
             "-M", self.modulation,
             "-l", str(self.squelch),
