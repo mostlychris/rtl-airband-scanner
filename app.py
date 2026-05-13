@@ -558,6 +558,7 @@ class RTLFMScanner:
                             delta      = delta2
                     if delta < 0.05:   # 50 kHz tolerance
                         cur_freq_mhz[0] = closest
+                        last_scan_t[0]  = time.time()
                         if self.debug:
                             # Overwrite one line — spinner shows scanning is alive
                             sys.stdout.write(
@@ -586,8 +587,10 @@ class RTLFMScanner:
               + (f", per-channel: {overrides}" if overrides else ""))
 
         CHUNK = int(self.audio_rate * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
-        squelch_open = False
-        last_sig_t   = 0.0
+        squelch_open  = False
+        last_sig_t    = 0.0
+        last_scan_t   = [time.time()]   # updated each time _read_stderr sees "Tuned to"
+        last_stuck_t  = [0.0]           # throttle repeated stuck warnings
 
         try:
             while self._running:
@@ -658,6 +661,17 @@ class RTLFMScanner:
                         _ensure_nl()
                         print("[Scanner] squelch closed")
                         self._emit({"type": "freq_clear", "mount": "sdr"})
+
+                    # Warn when rtl_fm hasn't changed frequency in a while — it's locked
+                    if self.debug and not squelch_open:
+                        now_t = time.time()
+                        age   = now_t - last_scan_t[0]
+                        if age > 5.0 and now_t - last_stuck_t[0] > 10.0:
+                            last_stuck_t[0] = now_t
+                            _ensure_nl()
+                            print(f"[scan] STUCK — no frequency change for "
+                                  f"{age:.0f}s (rtl_fm locked on "
+                                  f"{freq_str_cur or '???'})")
         finally:
             try:
                 proc.terminate()
