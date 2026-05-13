@@ -619,19 +619,16 @@ class RTLFMScanner:
         freq_keys = list(self.channels.keys())
         n_freqs   = len(freq_keys)
 
-        # Use audio_rate directly as the hardware sample rate — same as rtl_fm -s <rate>.
-        # The RTL2832U hardware-filters to the requested bandwidth; no software decimation
-        # needed. The oversampled approach (audio_rate × 42 = 1,008,000 Hz) causes the
-        # R820T PLL to fail during the internal retune triggered by set_sample_rate on
-        # this librtlsdr version.
-        hw_rate  = self.audio_rate
-        decimate = 1
-        chunk_n  = int(hw_rate * self.CHUNK_SECS)
+        oversample = 1_000_000 // self.audio_rate + 1
+        hw_rate    = self.audio_rate * oversample
+        decimate   = oversample
+        chunk_n    = int(hw_rate * self.CHUNK_SECS)
 
         fm_scale = hw_rate / (2.0 * np.pi * 5000.0)
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
-        print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate} Hz, "
+        print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
+              f"decimate×{decimate}→{self.audio_rate} Hz, "
               f"scan_dwell={self.scan_dwell}s, squelch_rms={self.squelch_rms}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
@@ -649,7 +646,11 @@ class RTLFMScanner:
             sdr.set_center_freq(int(float(freq_keys[0]) * 1_000_000))
             sdr.set_freq_correction(self.ppm)
             sdr.set_gain(self.gain)
-            sdr.reset_buffer()
+            # reset_buffer() is intentionally omitted: writing 0x1002 to the RTL2832U
+            # USB endpoint control register starts its DMA engine, which then STALLs
+            # control transfers (I2C). Every subsequent set_center_freq fails with -9.
+            # The bulk endpoint works without it — the RTL2832U outputs IQ data as
+            # soon as the device is configured.
 
             self.connected = True
             self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
