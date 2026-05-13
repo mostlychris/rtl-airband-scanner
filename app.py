@@ -641,6 +641,12 @@ class RTLFMScanner:
 
         try:
             sdr.set_sample_rate(hw_rate)
+            # Tune to the first scan frequency BEFORE applying ppm correction.
+            # rtlsdr_set_freq_correction internally calls set_center_freq(dev->freq)
+            # to re-apply the correction; if called before any tune, dev->freq is
+            # 100 MHz (set by rtlsdr_open init), and the 100 MHz + 1008000 Hz combo
+            # fails to lock the R820T PLL on this librtlsdr version.
+            sdr.set_center_freq(int(float(freq_keys[0]) * 1_000_000))
             sdr.set_freq_correction(self.ppm)
             sdr.set_gain(self.gain)
             sdr.reset_buffer()
