@@ -627,7 +627,10 @@ class RTLFMScanner:
         # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
         chunk_n    = ((int(hw_rate * self.CHUNK_SECS) + 255) // 256) * 256
 
-        fm_scale = hw_rate / (2.0 * np.pi * 5000.0)
+        fm_scale  = hw_rate / (2.0 * np.pi * 5000.0)
+        # Expected phase-difference variance for pure AWGN (uniform in [-π, π]).
+        # A captured FM carrier drives var(Δφ) ≪ this value.
+        _NOISE_VAR = np.pi ** 2 / 3.0
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
@@ -687,9 +690,17 @@ class RTLFMScanner:
                     np.multiply(audio, fm_scale, out=audio)
                     np.clip(audio, -1.0, 1.0, out=audio)
 
-                    rms    = float(np.sqrt(np.mean(audio ** 2)))
+                    # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
+                    # a captured FM carrier drives it near zero.
+                    # signal_level → 0 when silent, → 1 on a strong carrier.
+                    noise_ratio  = min(float(np.var(demod)) / _NOISE_VAR, 1.0)
+                    signal_level = 1.0 - noise_ratio
+                    rms    = signal_level
                     db     = 20.0 * np.log10(max(rms, 1e-9))
                     active = rms > threshold
+                    if self.debug:
+                        print(f"[squelch] {freq_str}: sig={signal_level:.3f} "
+                              f"({db:.1f} dB)  thr={threshold}")
 
                     self._emit({"type": "signal", "mount": "sdr",
                                 "db": round(db, 1), "active": active})
