@@ -622,7 +622,10 @@ class RTLFMScanner:
         oversample = 1_000_000 // self.audio_rate + 1
         hw_rate    = self.audio_rate * oversample
         decimate   = oversample
-        chunk_n    = int(hw_rate * self.CHUNK_SECS)
+        # Align to USB max-packet-size boundary: RTL-SDR never sends short packets,
+        # so a non-multiple-of-512 transfer causes LIBUSB_ERROR_OVERFLOW (-8).
+        # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
+        chunk_n    = ((int(hw_rate * self.CHUNK_SECS) + 255) // 256) * 256
 
         fm_scale = hw_rate / (2.0 * np.pi * 5000.0)
 
