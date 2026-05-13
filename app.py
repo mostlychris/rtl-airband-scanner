@@ -577,6 +577,26 @@ class RTLFMScanner:
 
         threading.Thread(target=_read_stderr, daemon=True).start()
 
+        def _watchdog():
+            """Prints a stuck warning when rtl_fm stops changing frequency.
+            Runs in its own thread so it fires even when stdout read blocks."""
+            time.sleep(6)   # let startup finish
+            while proc.poll() is None:
+                now_t = time.time()
+                age   = now_t - last_scan_t[0]
+                if self.debug and age > 5.0 and now_t - last_stuck_t[0] > 10.0:
+                    last_stuck_t[0] = now_t
+                    freq = cur_freq_mhz[0]
+                    sys.stdout.write(
+                        f'\n[scan] STUCK — no frequency change for {age:.0f}s'
+                        f' (rtl_fm locked on '
+                        f'{f"{freq:.3f}" if freq else "???"} MHz)\n')
+                    sys.stdout.flush()
+                    scan_dirty[0] = False
+                time.sleep(5)
+
+        threading.Thread(target=_watchdog, daemon=True).start()
+
         self.connected = True
         self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
