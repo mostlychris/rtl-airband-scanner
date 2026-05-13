@@ -419,38 +419,55 @@ class _RtlSdr:
 
     @staticmethod
     def _usb_reset(device_index: int) -> None:
-        """Reset the USB device before opening to clear any stale pipe/I2C state."""
+        """Power-cycle the USB device to clear stale RTL2832U I2C/pipe state."""
         try:
-            import fcntl, glob, time
+            import glob, os, time
         except ImportError:
-            return  # not Linux
-        USBDEVFS_RESET = 0x5514
+            return
         devs = []
         for vpath in sorted(glob.glob("/sys/bus/usb/devices/*/idVendor")):
             try:
-                if open(vpath).read().strip() != "0bda":  # Realtek VID
+                if open(vpath).read().strip() != "0bda":
                     continue
                 pid = open(vpath.replace("idVendor", "idProduct")).read().strip()
                 if pid not in ("2832", "2838", "2820", "0832"):
                     continue
-                base = vpath[:-8]
-                bus  = int(open(f"{base}busnum").read())
-                dev  = int(open(f"{base}devnum").read())
-                devs.append((bus, dev))
+                base    = os.path.dirname(vpath)
+                bus     = int(open(os.path.join(base, "busnum")).read())
+                devnum  = int(open(os.path.join(base, "devnum")).read())
+                sysname = os.path.basename(base)
+                devs.append((bus, devnum, sysname, base))
             except Exception:
                 pass
         devs.sort()
         if device_index >= len(devs):
             return
-        bus, devnum = devs[device_index]
-        node = f"/dev/bus/usb/{bus:03d}/{devnum:03d}"
+        bus, devnum, sysname, base = devs[device_index]
+
+        # Primary: deauthorize then reauthorize — software equivalent of unplug/replug.
+        # This fully power-cycles the RTL2832U and clears stuck I2C state that
+        # survives a plain USB reset.
+        auth = os.path.join(base, "authorized")
         try:
+            with open(auth, "w") as f: f.write("0")
+            time.sleep(0.5)
+            with open(auth, "w") as f: f.write("1")
+            time.sleep(2.0)
+            print(f"[Scanner] USB power-cycle: {sysname}")
+            return
+        except Exception:
+            pass
+
+        # Fallback: USBDEVFS_RESET (resets USB protocol layer only)
+        try:
+            import fcntl
+            node = f"/dev/bus/usb/{bus:03d}/{devnum:03d}"
             with open(node, "wb") as fh:
                 fcntl.ioctl(fh, USBDEVFS_RESET, 0)
             time.sleep(0.5)
             print(f"[Scanner] USB reset: {node}")
         except Exception as e:
-            print(f"[Scanner] USB reset failed ({node}): {e}")
+            print(f"[Scanner] USB reset failed ({sysname}): {e}")
 
     @staticmethod
     def index_for_serial(lib_path_hint: str, serial: str) -> int:
@@ -465,7 +482,9 @@ class _RtlSdr:
         raise RuntimeError(f"RTL-SDR with serial '{serial}' not found")
 
     def set_sample_rate(self, rate: int):
-        self._lib.rtlsdr_set_sample_rate(self._dev, int(rate))
+        r = self._lib.rtlsdr_set_sample_rate(self._dev, int(rate))
+        if r != 0:
+            raise RuntimeError(f"rtlsdr_set_sample_rate({rate}) failed: {r}")
 
     def set_center_freq(self, freq: int):
         r = self._lib.rtlsdr_set_center_freq(self._dev, int(freq))
@@ -473,14 +492,19 @@ class _RtlSdr:
             raise RuntimeError(f"rtlsdr_set_center_freq({freq/1e6:.3f} MHz) failed: {r}")
 
     def set_freq_correction(self, ppm: int):
-        self._lib.rtlsdr_set_freq_correction(self._dev, int(ppm))
+        r = self._lib.rtlsdr_set_freq_correction(self._dev, int(ppm))
+        if r not in (0, -2):  # -2 = already at this value, not an error
+            raise RuntimeError(f"rtlsdr_set_freq_correction({ppm}) failed: {r}")
 
     def set_gain(self, gain):
         if str(gain).lower() == "auto":
-            self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 0)
+            r = self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 0)
         else:
-            self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 1)
-            self._lib.rtlsdr_set_tuner_gain(self._dev, int(float(gain) * 10))
+            r = self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 1)
+            if r == 0:
+                r = self._lib.rtlsdr_set_tuner_gain(self._dev, int(float(gain) * 10))
+        if r != 0:
+            raise RuntimeError(f"set_gain({gain}) failed: {r}")
 
     def reset_buffer(self):
         self._lib.rtlsdr_reset_buffer(self._dev)
