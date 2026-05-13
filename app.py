@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-RTL-Airband Scanner — rtl_fm subprocess mode.
-No RTLSDR-Airband, Icecast, or pyrtlsdr required.
+RTL-Airband Scanner — pyrtlsdr direct mode.
 
 Install:
     sudo apt install rtl-sdr python3-numpy
-    pip install fastapi "uvicorn[standard]"
+    pip install fastapi "uvicorn[standard]" pyrtlsdr
     cp scanner_config.example.json scanner_config.json
     nano scanner_config.json
     python3 app.py
 """
 from __future__ import annotations
 
-import re, json, asyncio, threading, argparse, subprocess, shutil, uvicorn
+import json, asyncio, threading, argparse, uvicorn
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -26,78 +25,6 @@ AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
 # Silence chunk sent to audio WebSocket clients every 5 s when no signal is
 # active — keeps the connection alive so the browser never needs to re-enable.
 _AUDIO_KEEPALIVE = bytes(int(AUDIO_RATE * 2 * 0.1))         # 100 ms of zeros
-
-# rtl_fm prints these on every invocation — suppress them so only real errors show
-_RTLFM_NOISE = re.compile(
-    r"Found \d+ device|^\d+:\s+\S|Using device \d+|Found .+ tuner|"
-    r"Tuner gain set|Tuner error set|Tuned to \d+|Oversampling|"
-    r"Buffer size|sample rate is|Allocating \d+|Sampling at|Output at|"
-    r"Signal caught|User cancel",
-    re.IGNORECASE,
-)
-
-def _usb_reset_rtlsdr(device_id: str) -> bool:
-    """
-    Reset only the RTL-SDR device that this scanner instance is using.
-    device_id is the -d value from config: a numeric index string ("2") or a
-    serial number string ("00000001"). Devices are enumerated in bus/devnum
-    order, which matches librtlsdr's own indexing, so index "2" maps to the
-    same physical device that rtl_fm -d 2 would open.
-    Runs in a daemon thread so a D-state hang in the ioctl doesn't block forever.
-    """
-    import glob, fcntl, os, threading
-    USBDEVFS_RESET = 0x5514
-    result = [False]
-
-    def _do():
-        devices = []   # (bus, devnum, serial)
-        for vp in glob.glob("/sys/bus/usb/devices/*/idVendor"):
-            try:
-                base = os.path.dirname(vp)
-                if open(vp).read().strip() != "0bda":          # Realtek VID
-                    continue
-                if open(os.path.join(base, "idProduct")).read().strip() \
-                        not in ("2832", "2838"):                # RTL2832/RTL2838
-                    continue
-                bus = int(open(os.path.join(base, "busnum")).read())
-                dev = int(open(os.path.join(base, "devnum")).read())
-                serial = ""
-                try:
-                    serial = open(os.path.join(base, "serial")).read().strip()
-                except Exception:
-                    pass
-                devices.append((bus, dev, serial))
-            except Exception:
-                continue
-
-        devices.sort()   # bus/devnum order matches librtlsdr enumeration
-
-        target = None
-        if device_id.isdigit():
-            idx = int(device_id)
-            if idx < len(devices):
-                target = devices[idx]
-        else:
-            for d in devices:
-                if d[2] == device_id:
-                    target = d
-                    break
-
-        if target is None:
-            return
-        bus, dev, _ = target
-        try:
-            with open(f"/dev/bus/usb/{bus:03d}/{dev:03d}", "wb") as fh:
-                fcntl.ioctl(fh, USBDEVFS_RESET, 0)
-            result[0] = True
-        except Exception:
-            pass
-
-    t = threading.Thread(target=_do, daemon=True)
-    t.start()
-    t.join(timeout=5.0)
-    return result[0]
-
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -460,11 +387,11 @@ setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 
 </html>
 """
 
-# ── Scanner (rtl_fm subprocess) ────────────────────────────────────────────────
+# ── Scanner (pyrtlsdr direct) ──────────────────────────────────────────────────
 class RTLFMScanner:
     """
-    Runs rtl_fm in scan mode, reads raw PCM from stdout, parses stderr for
-    frequency info, and detects squelch via RMS level.
+    Opens the RTL-SDR device once via pyrtlsdr, retuning between frequencies
+    with sdr.center_freq. FM demodulation and decimation are done in Python.
     """
     CHUNK_SECS = 0.1   # seconds of audio per processing chunk
 
@@ -529,11 +456,6 @@ class RTLFMScanner:
     def _emit_audio(self, pcm: bytes):
         if self._on_audio: self._on_audio(pcm)
 
-    @staticmethod
-    def _rms(data: bytes) -> float:
-        s = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-        return float(np.sqrt(np.mean(s ** 2))) if len(s) else 0.0
-
     def _loop(self):
         import time
         while self._running:
@@ -550,84 +472,70 @@ class RTLFMScanner:
             time.sleep(5)
 
     def _run(self):
-        import time, sys, select
+        import time
+        from rtlsdr import RtlSdr
 
-        if not shutil.which("rtl_fm"):
-            raise RuntimeError("rtl_fm not found — sudo apt install rtl-sdr")
-
-        freq_keys = list(self.channels.keys())   # preserve config order
+        freq_keys = list(self.channels.keys())
         n_freqs   = len(freq_keys)
-        CHUNK     = int(self.audio_rate * 2 * self.CHUNK_SECS)
+
+        # Hardware sample rate: integer multiple of audio_rate for exact decimation.
+        # Matches the rate rtl_fm would use internally (oversample × audio_rate).
+        oversample = 1_000_000 // self.audio_rate + 1
+        hw_rate    = self.audio_rate * oversample   # e.g. 1_008_000 for 24 kHz
+        decimate   = oversample
+        chunk_n    = int(hw_rate * self.CHUNK_SECS) # IQ samples per 100 ms chunk
+
+        # FM discriminator scale: normalise to ±1.0 for ±5 kHz deviation (NFM voice).
+        fm_scale = hw_rate / (2.0 * np.pi * 5000.0)
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
-        print(f"[Scanner] started — {n_freqs} freq(s), scan_dwell={self.scan_dwell}s, "
-              f"squelch_rms={self.squelch_rms}, squelch_hold={self.squelch_hold}s, "
-              f"mod={self.modulation}, samp_rate={self.samp_rate}, audio_rate={self.audio_rate}"
+        print(f"[Scanner] pyrtlsdr — {n_freqs} freq(s), hw_rate={hw_rate}, "
+              f"decimate×{decimate}→{self.audio_rate} Hz, "
+              f"scan_dwell={self.scan_dwell}s, squelch_rms={self.squelch_rms}"
               + (f", per-channel: {overrides}" if overrides else ""))
 
-        self.connected = True
-        self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
+        if self.device.isdigit():
+            sdr = RtlSdr(device_index=int(self.device))
+        else:
+            sdr = RtlSdr(serial_number=self.device)
 
-        scan_idx = 0
-        consecutive_failures = 0
+        try:
+            sdr.sample_rate = hw_rate
+            sdr.set_freq_correction(self.ppm)
+            sdr.gain = 'auto' if self.gain.lower() == 'auto' else float(self.gain)
 
-        while self._running:
-            freq_str  = freq_keys[scan_idx]
-            freq_mhz  = float(freq_str)
-            label     = self.channels[freq_str]
-            threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
+            self.connected = True
+            self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
 
-            cmd = ["rtl_fm",
-                   "-f", f"{freq_mhz:.3f}M",
-                   "-M", self.modulation,
-                   "-s", str(self.samp_rate),
-                   "-r", str(self.audio_rate),
-                   "-p", str(self.ppm),
-                   "-d", self.device]
-            if self.squelch > 0:
-                cmd += ["-l", str(self.squelch)]
-            if self.gain.lower() != "auto":
-                cmd += ["-g", self.gain]
-            cmd += ["-"]
+            scan_idx = 0
 
-            if self.debug:
-                print(f"[scan] → {freq_str} MHz  ({label})")
+            while self._running:
+                freq_str  = freq_keys[scan_idx]
+                freq_hz   = int(float(freq_str) * 1_000_000)
+                label     = self.channels[freq_str]
+                threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
 
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+                if self.debug:
+                    print(f"[scan] → {freq_str} MHz  ({label})")
 
-            def _drain_stderr(p=proc):
-                for line in p.stderr:
-                    text = line.decode("utf-8", errors="replace").strip()
-                    if text and not _RTLFM_NOISE.search(text):
-                        print(f"[rtl_fm] {text}")
-            threading.Thread(target=_drain_stderr, daemon=True).start()
+                sdr.center_freq = freq_hz
+                sdr.read_samples(chunk_n)   # discard stale samples from previous tune
 
-            proc_start   = time.time()
-            dwell_start  = None    # set after first PCM chunk arrives
-            squelch_open = False
-            last_sig_t   = 0.0
-            got_audio    = False
+                dwell_start  = time.time()
+                squelch_open = False
+                last_sig_t   = 0.0
 
-            try:
                 while self._running:
-                    ready = select.select([proc.stdout], [], [], 5.0)[0]
-                    if not ready:
-                        if self.debug:
-                            print(f"[scan] {freq_str}: rtl_fm no output for 5s, aborting")
-                        break
-                    data = proc.stdout.read(CHUNK)
-                    if not data:
-                        break
+                    raw   = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
 
-                    got_audio = True
-                    if dwell_start is None:
-                        dwell_start = time.time()
+                    # FM discriminator → decimate via box filter → scale to ±1
+                    demod = np.angle(raw[1:] * np.conj(raw[:-1]))
+                    n     = len(demod) // decimate * decimate
+                    audio = demod[:n].reshape(-1, decimate).mean(axis=1).astype(np.float32)
+                    np.multiply(audio, fm_scale, out=audio)
+                    np.clip(audio, -1.0, 1.0, out=audio)
 
-                    rms    = self._rms(data)
+                    rms    = float(np.sqrt(np.mean(audio ** 2)))
                     db     = 20.0 * np.log10(max(rms, 1e-9))
                     active = rms > threshold
 
@@ -636,7 +544,7 @@ class RTLFMScanner:
 
                     if active:
                         last_sig_t  = time.time()
-                        dwell_start = time.time()   # reset dwell while signal present
+                        dwell_start = time.time()
 
                         if not squelch_open or self._active_freq != freq_str:
                             squelch_open = True
@@ -653,7 +561,8 @@ class RTLFMScanner:
                                 "time":  now.isoformat(),
                             })
 
-                        self._emit_audio(data)
+                        pcm = (audio * 32767).astype(np.int16).tobytes()
+                        self._emit_audio(pcm)
 
                     else:
                         if squelch_open and time.time() - last_sig_t > self.squelch_hold:
@@ -665,45 +574,19 @@ class RTLFMScanner:
                                 print("[Scanner] squelch closed")
                             self._emit({"type": "freq_clear", "mount": "sdr"})
                             if n_freqs > 1:
-                                break   # advance to next frequency
+                                break
 
                         elif not squelch_open and n_freqs > 1:
-                            now_t = time.time()
-                            if dwell_start is not None and now_t - dwell_start > self.scan_dwell:
-                                break
-                            if dwell_start is None and now_t - proc_start > self.scan_dwell + 5.0:
-                                if self.debug:
-                                    print(f"[scan] {freq_str}: rtl_fm startup timeout")
+                            if time.time() - dwell_start > self.scan_dwell:
                                 break
 
-            finally:
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=5)   # give rtl_fm time to close USB cleanly
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait()
+                scan_idx = (scan_idx + 1) % n_freqs
 
-            if got_audio:
-                consecutive_failures = 0
-            else:
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
-                    print("[Scanner] USB device appears hung — attempting reset")
-                    if _usb_reset_rtlsdr(self.device):
-                        print("[Scanner] USB reset sent — waiting for re-enumeration")
-                        consecutive_failures = 0
-                        time.sleep(3.0)
-                    else:
-                        raise RuntimeError(
-                            "rtl_fm no audio 3 times and USB reset failed "
-                            "— device may need a power cycle")
-                else:
-                    time.sleep(1.0)
-
-            scan_idx = (scan_idx + 1) % n_freqs
-            if n_freqs > 1 and self._running:
-                time.sleep(0.1)   # give libusb time to release device between hops
+        finally:
+            try:
+                sdr.close()
+            except Exception:
+                pass
 
 
 # ── WebSocket manager ──────────────────────────────────────────────────────────
