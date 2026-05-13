@@ -680,12 +680,21 @@ class RTLFMScanner:
                 dwell_start  = time.time()
                 squelch_open = False
                 last_sig_t   = 0.0
+                last_iq      = None   # last IQ sample of previous chunk for FM continuity
 
                 while self._running:
-                    raw   = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
+                    raw = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
 
-                    # FM discriminator → decimate via box filter → scale to ±1
-                    demod = np.angle(raw[1:] * np.conj(raw[:-1]))
+                    # FM discriminator — carry last sample across chunk boundaries so
+                    # the phase difference at the seam is computed rather than dropped.
+                    if last_iq is not None:
+                        buf = np.empty(chunk_n + 1, dtype=np.complex64)
+                        buf[0]  = last_iq
+                        buf[1:] = raw
+                        demod = np.angle(buf[1:] * np.conj(buf[:-1]))
+                    else:
+                        demod = np.angle(raw[1:] * np.conj(raw[:-1]))
+                    last_iq = raw[-1]
                     n     = len(demod) // decimate * decimate
                     audio = demod[:n].reshape(-1, decimate).mean(axis=1).astype(np.float32)
                     np.multiply(audio, fm_scale, out=audio)
