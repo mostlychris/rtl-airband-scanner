@@ -36,31 +36,62 @@ _RTLFM_NOISE = re.compile(
     re.IGNORECASE,
 )
 
-def _usb_reset_rtlsdr() -> bool:
+def _usb_reset_rtlsdr(device_id: str) -> bool:
     """
-    Send USBDEVFS_RESET to every Realtek (RTL-SDR) USB device found in sysfs.
-    Equivalent to a physical unplug/replug without needing root — works as long
-    as the calling user can open /dev/bus/usb/* (plugdev group on most Pi setups).
+    Reset only the RTL-SDR device that this scanner instance is using.
+    device_id is the -d value from config: a numeric index string ("2") or a
+    serial number string ("00000001"). Devices are enumerated in bus/devnum
+    order, which matches librtlsdr's own indexing, so index "2" maps to the
+    same physical device that rtl_fm -d 2 would open.
     Runs in a daemon thread so a D-state hang in the ioctl doesn't block forever.
-    Returns True if at least one device was reset successfully.
     """
     import glob, fcntl, os, threading
     USBDEVFS_RESET = 0x5514
     result = [False]
 
     def _do():
+        devices = []   # (bus, devnum, serial)
         for vp in glob.glob("/sys/bus/usb/devices/*/idVendor"):
             try:
-                if open(vp).read().strip() != "0bda":   # Realtek VID
-                    continue
                 base = os.path.dirname(vp)
+                if open(vp).read().strip() != "0bda":          # Realtek VID
+                    continue
+                if open(os.path.join(base, "idProduct")).read().strip() \
+                        not in ("2832", "2838"):                # RTL2832/RTL2838
+                    continue
                 bus = int(open(os.path.join(base, "busnum")).read())
                 dev = int(open(os.path.join(base, "devnum")).read())
-                with open(f"/dev/bus/usb/{bus:03d}/{dev:03d}", "wb") as fh:
-                    fcntl.ioctl(fh, USBDEVFS_RESET, 0)
-                result[0] = True
+                serial = ""
+                try:
+                    serial = open(os.path.join(base, "serial")).read().strip()
+                except Exception:
+                    pass
+                devices.append((bus, dev, serial))
             except Exception:
                 continue
+
+        devices.sort()   # bus/devnum order matches librtlsdr enumeration
+
+        target = None
+        if device_id.isdigit():
+            idx = int(device_id)
+            if idx < len(devices):
+                target = devices[idx]
+        else:
+            for d in devices:
+                if d[2] == device_id:
+                    target = d
+                    break
+
+        if target is None:
+            return
+        bus, dev, _ = target
+        try:
+            with open(f"/dev/bus/usb/{bus:03d}/{dev:03d}", "wb") as fh:
+                fcntl.ioctl(fh, USBDEVFS_RESET, 0)
+            result[0] = True
+        except Exception:
+            pass
 
     t = threading.Thread(target=_do, daemon=True)
     t.start()
@@ -659,7 +690,7 @@ class RTLFMScanner:
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
                     print("[Scanner] USB device appears hung — attempting reset")
-                    if _usb_reset_rtlsdr():
+                    if _usb_reset_rtlsdr(self.device):
                         print("[Scanner] USB reset sent — waiting for re-enumeration")
                         consecutive_failures = 0
                         time.sleep(3.0)
