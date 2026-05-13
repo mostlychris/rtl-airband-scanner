@@ -23,15 +23,6 @@ from fastapi.responses import HTMLResponse
 AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
 
 
-def _rtl_hw_offset(samp_rate: int) -> int:
-    """
-    rtl_fm tunes hardware to (target + offset) to keep the signal away from DC.
-    offset = hardware_rate / 4, hardware_rate = samp_rate * oversample,
-    oversample = (1_000_000 // samp_rate) + 1   (matches rtl_fm source).
-    """
-    oversample = (1_000_000 // samp_rate) + 1
-    return (samp_rate * oversample) // 4
-
 # Silence chunk sent to audio WebSocket clients every 5 s when no signal is
 # active — keeps the connection alive so the browser never needs to re-enable.
 _AUDIO_KEEPALIVE = bytes(int(AUDIO_RATE * 2 * 0.1))         # 100 ms of zeros
@@ -411,7 +402,7 @@ class RTLFMScanner:
                  channel_squelch: dict[str, float] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
-                 samp_rate: int = 250000,
+                 samp_rate: int = 250000, scan_dwell: float = 0.5,
                  debug: bool = False,
                  on_event=None, on_audio=None):
         self.name            = name
@@ -427,7 +418,7 @@ class RTLFMScanner:
         self.device       = str(device)
         self.gain         = str(gain)
         self.samp_rate    = samp_rate
-        self.hw_offset    = _rtl_hw_offset(samp_rate)
+        self.scan_dwell   = scan_dwell
         # rtl_fm can only downsample, not upsample. Output rate must be ≤ samp_rate.
         self.audio_rate   = min(samp_rate, AUDIO_RATE)
         self._on_event  = on_event
@@ -487,233 +478,134 @@ class RTLFMScanner:
             time.sleep(5)
 
     def _run(self):
-        import time, sys, itertools
-
-        # When --debug is on, "Tuned to" lines overwrite a single terminal line with
-        # a spinner instead of scrolling.  _ensure_nl() moves past that line before
-        # any print() that needs its own full line.
-        scan_dirty = [False]
-        def _ensure_nl():
-            if scan_dirty[0]:
-                sys.stdout.write('\n')
-                sys.stdout.flush()
-                scan_dirty[0] = False
+        import time, sys
 
         if not shutil.which("rtl_fm"):
             raise RuntimeError("rtl_fm not found — sudo apt install rtl-sdr")
 
-        cmd = ["rtl_fm"]
-        for freq_str in self.channels:   # preserve config order — user controls scan priority
-            cmd += ["-f", f"{float(freq_str):.3f}M"]
-        cmd += [
-            "-M", self.modulation,
-            "-l", str(self.squelch),
-            "-s", str(self.samp_rate), # capture rate (RTL-SDR hardware)
-            "-r", str(self.audio_rate), # output PCM rate (≤ samp_rate)
-            "-p", str(self.ppm),
-            "-d", self.device,       # device index or serial number
-        ]
-        if self.gain.lower() != "auto":
-            cmd += ["-g", self.gain] # manual tuner gain in dB (omit for AGC)
-        cmd += ["-"]                 # write PCM to stdout
-        print(f"[Scanner] {' '.join(cmd)}")
+        freq_keys = list(self.channels.keys())   # preserve config order
+        n_freqs   = len(freq_keys)
+        CHUNK     = int(self.audio_rate * 2 * self.CHUNK_SECS)
 
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        # Parse stderr for "Tuned to X Hz" to know the current frequency
-        cur_freq_mhz: list[float | None] = [None]
-
-        def _read_stderr():
-            spin = itertools.cycle('|/-\\')
-            for line in proc.stderr:
-                text = line.decode("utf-8", errors="replace").strip()
-                if not text:
-                    continue
-                # Match "Tuned to 446000000 Hz" or "446.000 MHz" etc.
-                m = re.search(r"Tuned to ([\d.]+)\s*(MHz|kHz|Hz)", text, re.IGNORECASE)
-                if m:
-                    val  = float(m.group(1))
-                    unit = m.group(2).lower()
-                    hz   = val * {"hz": 1, "khz": 1e3, "mhz": 1e6}[unit]
-                    # Subtract rtl_fm's DC-avoidance offset to get the actual
-                    # scan target, then match to our configured frequencies.
-                    # Try with offset first; if no match within tolerance, also
-                    # try raw (no-offset) in case this rtl_fm build prints the
-                    # pre-offset target frequency instead of the hardware frequency.
-                    target_mhz = (hz - self.hw_offset) / 1e6
-                    closest = min(self.frequencies, key=lambda f: abs(f - target_mhz))
-                    delta = abs(closest - target_mhz)
-                    if delta >= 0.05:
-                        # Fallback: try treating the reported frequency as the target (no offset)
-                        raw_mhz  = hz / 1e6
-                        closest2 = min(self.frequencies, key=lambda f: abs(f - raw_mhz))
-                        delta2   = abs(closest2 - raw_mhz)
-                        if delta2 < delta:
-                            target_mhz = raw_mhz
-                            closest    = closest2
-                            delta      = delta2
-                    if delta < 0.05:   # 50 kHz tolerance
-                        cur_freq_mhz[0] = closest
-                        last_scan_t[0]  = time.time()
-                        if self.debug:
-                            # Overwrite one line — spinner shows scanning is alive
-                            sys.stdout.write(
-                                f'\r[scan] {next(spin)} {closest:.3f} MHz   ')
-                            sys.stdout.flush()
-                            scan_dirty[0] = True
-                    elif self.debug:
-                        _ensure_nl()
-                        print(f"[dbg] tuned: hw={hz/1e6:.4f} MHz  "
-                              f"target={target_mhz:.4f} MHz  "
-                              f"→ NO MATCH (closest={closest:.3f}, Δ={delta*1000:.0f} kHz)")
-                else:
-                    # All other rtl_fm output (startup info, errors) — clear scan line first
-                    _ensure_nl()
-                    print(f"[rtl_fm] {text}")
-
-        threading.Thread(target=_read_stderr, daemon=True).start()
-
-        def _watchdog():
-            """Prints a stuck warning when rtl_fm stops changing frequency.
-            Runs in its own thread so it fires even when stdout read blocks."""
-            time.sleep(6)   # let startup finish
-            while proc.poll() is None:
-                now_t = time.time()
-                age   = now_t - last_scan_t[0]
-                if self.debug and age > 5.0 and now_t - last_stuck_t[0] > 10.0:
-                    last_stuck_t[0] = now_t
-                    freq = cur_freq_mhz[0]
-                    sys.stdout.write(
-                        f'\n[scan] STUCK — no frequency change for {age:.0f}s'
-                        f' (rtl_fm locked on '
-                        f'{f"{freq:.3f}" if freq else "???"} MHz)\n')
-                    sys.stdout.flush()
-                    scan_dirty[0] = False
-                time.sleep(5)
-
-        threading.Thread(target=_watchdog, daemon=True).start()
+        overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
+        print(f"[Scanner] started — {n_freqs} freq(s), scan_dwell={self.scan_dwell}s, "
+              f"squelch_rms={self.squelch_rms}, squelch_hold={self.squelch_hold}s, "
+              f"mod={self.modulation}, samp_rate={self.samp_rate}, audio_rate={self.audio_rate}"
+              + (f", per-channel: {overrides}" if overrides else ""))
 
         self.connected = True
         self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
-        overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
-        print(f"[Scanner] started — {len(self.frequencies)} frequencies, "
-              f"squelch={self.squelch}, squelch_rms={self.squelch_rms}, "
-              f"squelch_hold={self.squelch_hold}s, mod={self.modulation}, "
-              f"samp_rate={self.samp_rate}, audio_rate={self.audio_rate}, hw_offset={self.hw_offset}"
-              + (f", per-channel: {overrides}" if overrides else ""))
 
-        # Warn about frequency collisions: when rtl_fm scans frequency F it tunes
-        # the hardware to F + hw_offset.  If that lands within ±samp_rate/2 of
-        # another configured frequency G, rtl_fm will receive G while "on" F.
-        half_bw_mhz = self.samp_rate / 2 / 1e6
-        for f in self.frequencies:
-            hw_mhz = f + self.hw_offset / 1e6
-            for g in self.frequencies:
-                if g == f:
-                    continue
-                dist_khz = abs(hw_mhz - g) * 1000
-                if dist_khz < self.samp_rate / 2 / 1000:
-                    print(f"[Scanner] WARNING: scanning {f:.3f} MHz tunes hardware "
-                          f"to {hw_mhz:.3f} MHz — only {dist_khz:.0f} kHz from "
-                          f"{g:.3f} MHz (within {half_bw_mhz*1000:.0f} kHz demod window). "
-                          f"Remove one of these frequencies or change samp_rate.")
+        scan_idx = 0
 
-        CHUNK = int(self.audio_rate * 2 * self.CHUNK_SECS)  # bytes: rate * 2 bytes/sample * secs
-        squelch_open  = False
-        last_sig_t    = 0.0
-        last_scan_t   = [time.time()]   # updated each time _read_stderr sees "Tuned to"
-        last_stuck_t  = [0.0]           # throttle repeated stuck warnings
+        while self._running:
+            freq_str  = freq_keys[scan_idx]
+            freq_mhz  = float(freq_str)
+            label     = self.channels[freq_str]
+            threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
 
-        try:
-            while self._running:
-                data = proc.stdout.read(CHUNK)
-                if not data:
-                    break
+            cmd = ["rtl_fm",
+                   "-f", f"{freq_mhz:.3f}M",
+                   "-M", self.modulation,
+                   "-s", str(self.samp_rate),
+                   "-r", str(self.audio_rate),
+                   "-p", str(self.ppm),
+                   "-d", self.device]
+            if self.squelch > 0:
+                cmd += ["-l", str(self.squelch)]
+            if self.gain.lower() != "auto":
+                cmd += ["-g", self.gain]
+            cmd += ["-"]
 
-                rms  = self._rms(data)
-                db   = 20.0 * np.log10(max(rms, 1e-9))
+            if self.debug:
+                print(f"[scan] → {freq_str} MHz  ({label})")
 
-                freq_mhz     = cur_freq_mhz[0]
-                # Single-frequency fallback: if only one channel, we always know where we are
-                if freq_mhz is None and len(self.frequencies) == 1:
-                    freq_mhz = self.frequencies[0]
-                freq_str_cur = f"{freq_mhz:.3f}" if freq_mhz is not None else None
-                per_ch       = freq_str_cur in self.channel_squelch if freq_str_cur else False
-                threshold    = self.channel_squelch.get(freq_str_cur, self.squelch_rms) \
-                               if freq_str_cur else self.squelch_rms
-                # Unknown frequency with multiple channels → never active (avoids noise
-                # floor triggering the bar/audio with no useful frequency to show)
-                active       = (rms > threshold) if freq_str_cur is not None else False
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
 
-                if self.debug:
-                    thr_src  = f"ch[{freq_str_cur}]" if per_ch else "global"
-                    sq_state = "open" if squelch_open else "shut"
-                    hold_rem = max(0.0, self.squelch_hold - (time.time() - last_sig_t))
-                    if freq_str_cur is None:
-                        _ensure_nl()
-                        print(f"[dbg] ??? MHz  {db:+.1f} dB  freq unknown — inactive")
-                    elif active:
-                        _ensure_nl()
-                        print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
-                              f"  thr={threshold:.4f}({thr_src})  ABOVE  sq={sq_state}")
-                    elif squelch_open:
-                        _ensure_nl()
-                        print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
-                              f"  thr={threshold:.4f}({thr_src})  below  sq={sq_state}"
-                              f"  hold={hold_rem:.1f}s remain")
+            def _drain_stderr(p=proc):
+                for line in p.stderr:
+                    text = line.decode("utf-8", errors="replace").strip()
+                    if text and self.debug:
+                        print(f"[rtl_fm] {text}")
+            threading.Thread(target=_drain_stderr, daemon=True).start()
 
-                self._emit({"type": "signal", "mount": "sdr",
-                            "db": round(db, 1), "active": active})
+            proc_start   = time.time()
+            dwell_start  = None    # set after first PCM chunk arrives
+            squelch_open = False
+            last_sig_t   = 0.0
 
-                if active:
-                    last_sig_t = time.time()
-                    with self._lock:
-                        if not squelch_open or self._active_freq != freq_str_cur:
+            try:
+                while self._running:
+                    data = proc.stdout.read(CHUNK)
+                    if not data:
+                        break
+
+                    if dwell_start is None:
+                        dwell_start = time.time()
+
+                    rms    = self._rms(data)
+                    db     = 20.0 * np.log10(max(rms, 1e-9))
+                    active = rms > threshold
+
+                    self._emit({"type": "signal", "mount": "sdr",
+                                "db": round(db, 1), "active": active})
+
+                    if active:
+                        last_sig_t  = time.time()
+                        dwell_start = time.time()   # reset dwell while signal present
+
+                        if not squelch_open or self._active_freq != freq_str:
                             squelch_open = True
-                            now   = datetime.now()
-                            label = self.channels.get(freq_str_cur, freq_str_cur)
-                            self._active_freq  = freq_str_cur
-                            self._active_since = now
-                            self._history.appendleft((now, freq_str_cur, label))
-                            _ensure_nl()
-                            print(f"[Scanner] active: {freq_str_cur} MHz  ({db:.1f} dB)")
+                            with self._lock:
+                                now   = datetime.now()
+                                self._active_freq  = freq_str
+                                self._active_since = now
+                                self._history.appendleft((now, freq_str, label))
+                            if self.debug:
+                                print(f"[Scanner] active: {freq_str} MHz  ({db:.1f} dB)")
                             self._emit({
                                 "type":  "freq_change", "mount": "sdr",
-                                "name":  self.name, "freq": freq_str_cur, "label": label,
+                                "name":  self.name, "freq": freq_str, "label": label,
                                 "time":  now.isoformat(),
                             })
-                    self._emit_audio(data)
 
-                else:
-                    if squelch_open and time.time() - last_sig_t > self.squelch_hold:
-                        with self._lock:
-                            squelch_open      = False
-                            self._active_freq  = None
-                            self._active_since = None
-                        _ensure_nl()
-                        print("[Scanner] squelch closed")
-                        self._emit({"type": "freq_clear", "mount": "sdr"})
+                        self._emit_audio(data)
 
-                    # Warn when rtl_fm hasn't changed frequency in a while — it's locked
-                    if self.debug and not squelch_open:
-                        now_t = time.time()
-                        age   = now_t - last_scan_t[0]
-                        if age > 5.0 and now_t - last_stuck_t[0] > 10.0:
-                            last_stuck_t[0] = now_t
-                            _ensure_nl()
-                            print(f"[scan] STUCK — no frequency change for "
-                                  f"{age:.0f}s (rtl_fm locked on "
-                                  f"{freq_str_cur or '???'})")
-        finally:
-            try:
-                proc.terminate()
-                proc.wait(timeout=3)
-            except Exception:
-                proc.kill()
+                    else:
+                        if squelch_open and time.time() - last_sig_t > self.squelch_hold:
+                            squelch_open = False
+                            with self._lock:
+                                self._active_freq  = None
+                                self._active_since = None
+                            if self.debug:
+                                print("[Scanner] squelch closed")
+                            self._emit({"type": "freq_clear", "mount": "sdr"})
+                            if n_freqs > 1:
+                                break   # advance to next frequency
+
+                        elif not squelch_open and n_freqs > 1:
+                            now_t = time.time()
+                            if dwell_start is not None and now_t - dwell_start > self.scan_dwell:
+                                break
+                            if dwell_start is None and now_t - proc_start > self.scan_dwell + 5.0:
+                                if self.debug:
+                                    print(f"[scan] {freq_str}: rtl_fm startup timeout")
+                                break
+
+            finally:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    proc.kill()
+
+            scan_idx = (scan_idx + 1) % n_freqs
+            if n_freqs > 1 and self._running:
+                time.sleep(0.05)   # brief pause between hops for USB device to settle
 
 
 # ── WebSocket manager ──────────────────────────────────────────────────────────
@@ -915,6 +807,7 @@ def main():
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
         samp_rate       = cfg.get("samp_rate", 250000),
+        scan_dwell      = cfg.get("scan_dwell", 0.5),
         debug           = args.debug,
         on_event        = _emit,
         on_audio        = _audio_cb,
