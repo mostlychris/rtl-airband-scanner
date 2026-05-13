@@ -152,6 +152,7 @@ let actItems = [];
 // ── Audio (Web Audio API, PCM via WebSocket) ───────────────────────────────────
 let PCM_RATE  = 25000;
 let actx      = null;
+let audFilt   = null;   // persistent lowpass filter node
 let audWs     = null;
 let audMount  = null;
 let nextAt    = 0;
@@ -159,6 +160,11 @@ let nextAt    = 0;
 function initAudioCtx() {
   if (actx) return;
   actx = new AudioContext({ latencyHint: 'interactive' });
+  audFilt = actx.createBiquadFilter();
+  audFilt.type = 'lowpass';
+  audFilt.frequency.value = 3000;  // 3 kHz: pass voice, block FM noise above Nyquist
+  audFilt.Q.value = 0.707;         // Butterworth — no resonance peak
+  audFilt.connect(actx.destination);
 }
 
 function openAudioStream(mount) {
@@ -192,7 +198,7 @@ function openAudioStream(mount) {
     const ch  = buf.getChannelData(0);
     for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
     const src = actx.createBufferSource();
-    src.buffer = buf; src.connect(actx.destination);
+    src.buffer = buf; src.connect(audFilt || actx.destination);
     if (nextAt < now + 0.05) nextAt = now + 0.05;
     src.start(nextAt);
     nextAt += buf.duration;
