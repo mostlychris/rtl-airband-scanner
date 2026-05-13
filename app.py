@@ -646,11 +646,12 @@ class RTLFMScanner:
             sdr.set_center_freq(int(float(freq_keys[0]) * 1_000_000))
             sdr.set_freq_correction(self.ppm)
             sdr.set_gain(self.gain)
-            # reset_buffer() is intentionally omitted: writing 0x1002 to the RTL2832U
-            # USB endpoint control register starts its DMA engine, which then STALLs
-            # control transfers (I2C). Every subsequent set_center_freq fails with -9.
-            # The bulk endpoint works without it — the RTL2832U outputs IQ data as
-            # soon as the device is configured.
+            sdr.reset_buffer()
+            # One priming read before the scan loop. reset_buffer enables the RTL2832U
+            # DMA engine but leaves it in an idle state where it STALLs control transfers
+            # (I2C, used by set_center_freq). After one completed bulk read, the DMA is
+            # active and co-exists with control transfers for the rest of the session.
+            sdr.read_samples(chunk_n)
 
             self.connected = True
             self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
