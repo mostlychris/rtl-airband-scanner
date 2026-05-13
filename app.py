@@ -487,7 +487,18 @@ class RTLFMScanner:
             time.sleep(5)
 
     def _run(self):
-        import time
+        import time, sys, itertools
+
+        # When --debug is on, "Tuned to" lines overwrite a single terminal line with
+        # a spinner instead of scrolling.  _ensure_nl() moves past that line before
+        # any print() that needs its own full line.
+        scan_dirty = [False]
+        def _ensure_nl():
+            if scan_dirty[0]:
+                sys.stdout.write('\n')
+                sys.stdout.flush()
+                scan_dirty[0] = False
+
         if not shutil.which("rtl_fm"):
             raise RuntimeError("rtl_fm not found — sudo apt install rtl-sdr")
 
@@ -517,10 +528,11 @@ class RTLFMScanner:
         cur_freq_mhz: list[float | None] = [None]
 
         def _read_stderr():
+            spin = itertools.cycle('|/-\\')
             for line in proc.stderr:
                 text = line.decode("utf-8", errors="replace").strip()
-                if text:
-                    print(f"[rtl_fm] {text}")
+                if not text:
+                    continue
                 # Match "Tuned to 446000000 Hz" or "446.000 MHz" etc.
                 m = re.search(r"Tuned to ([\d.]+)\s*(MHz|kHz|Hz)", text, re.IGNORECASE)
                 if m:
@@ -547,13 +559,20 @@ class RTLFMScanner:
                     if delta < 0.05:   # 50 kHz tolerance
                         cur_freq_mhz[0] = closest
                         if self.debug:
-                            print(f"[dbg] tuned: hw={hz/1e6:.4f} MHz  "
-                                  f"target={target_mhz:.4f} MHz  "
-                                  f"→ matched {closest:.3f} MHz")
+                            # Overwrite one line — spinner shows scanning is alive
+                            sys.stdout.write(
+                                f'\r[scan] {next(spin)} {closest:.3f} MHz   ')
+                            sys.stdout.flush()
+                            scan_dirty[0] = True
                     elif self.debug:
+                        _ensure_nl()
                         print(f"[dbg] tuned: hw={hz/1e6:.4f} MHz  "
                               f"target={target_mhz:.4f} MHz  "
                               f"→ NO MATCH (closest={closest:.3f}, Δ={delta*1000:.0f} kHz)")
+                else:
+                    # All other rtl_fm output (startup info, errors) — clear scan line first
+                    _ensure_nl()
+                    print(f"[rtl_fm] {text}")
 
         threading.Thread(target=_read_stderr, daemon=True).start()
 
@@ -596,11 +615,14 @@ class RTLFMScanner:
                     sq_state = "open" if squelch_open else "shut"
                     hold_rem = max(0.0, self.squelch_hold - (time.time() - last_sig_t))
                     if freq_str_cur is None:
+                        _ensure_nl()
                         print(f"[dbg] ??? MHz  {db:+.1f} dB  freq unknown — inactive")
                     elif active:
+                        _ensure_nl()
                         print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
                               f"  thr={threshold:.4f}({thr_src})  ABOVE  sq={sq_state}")
                     elif squelch_open:
+                        _ensure_nl()
                         print(f"[dbg] {freq_str_cur} MHz  {db:+.1f} dB"
                               f"  thr={threshold:.4f}({thr_src})  below  sq={sq_state}"
                               f"  hold={hold_rem:.1f}s remain")
@@ -618,6 +640,7 @@ class RTLFMScanner:
                             self._active_freq  = freq_str_cur
                             self._active_since = now
                             self._history.appendleft((now, freq_str_cur, label))
+                            _ensure_nl()
                             print(f"[Scanner] active: {freq_str_cur} MHz  ({db:.1f} dB)")
                             self._emit({
                                 "type":  "freq_change", "mount": "sdr",
@@ -632,6 +655,7 @@ class RTLFMScanner:
                             squelch_open      = False
                             self._active_freq  = None
                             self._active_since = None
+                        _ensure_nl()
                         print("[Scanner] squelch closed")
                         self._emit({"type": "freq_clear", "mount": "sdr"})
         finally:
