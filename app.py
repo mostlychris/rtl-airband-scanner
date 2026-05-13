@@ -29,7 +29,7 @@ _AUDIO_KEEPALIVE = bytes(int(AUDIO_RATE * 2 * 0.1))         # 100 ms of zeros
 
 # rtl_fm prints these on every invocation — suppress them so only real errors show
 _RTLFM_NOISE = re.compile(
-    r"Found \d+ device|Using device \d+|Found .+ tuner|"
+    r"Found \d+ device|^\d+:\s+\S|Using device \d+|Found .+ tuner|"
     r"Tuner gain set|Tuner error set|Tuned to \d+|Oversampling|"
     r"Buffer size|sample rate is|Allocating \d+|Sampling at|Output at|"
     r"Signal caught|User cancel",
