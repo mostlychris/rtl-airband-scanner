@@ -397,6 +397,7 @@ class _RtlSdr:
 
     def __init__(self, device_index: int = 0):
         import ctypes, ctypes.util
+        _RtlSdr._usb_reset(device_index)
         lib = None
         for name in ("librtlsdr.so.0", "librtlsdr.so"):
             try:
@@ -417,6 +418,41 @@ class _RtlSdr:
             raise RuntimeError(f"rtlsdr_open(index={device_index}) failed: {r}")
 
     @staticmethod
+    def _usb_reset(device_index: int) -> None:
+        """Reset the USB device before opening to clear any stale pipe/I2C state."""
+        try:
+            import fcntl, glob, time
+        except ImportError:
+            return  # not Linux
+        USBDEVFS_RESET = 0x5514
+        devs = []
+        for vpath in sorted(glob.glob("/sys/bus/usb/devices/*/idVendor")):
+            try:
+                if open(vpath).read().strip() != "0bda":  # Realtek VID
+                    continue
+                pid = open(vpath.replace("idVendor", "idProduct")).read().strip()
+                if pid not in ("2832", "2838", "2820", "0832"):
+                    continue
+                base = vpath[:-8]
+                bus  = int(open(f"{base}busnum").read())
+                dev  = int(open(f"{base}devnum").read())
+                devs.append((bus, dev))
+            except Exception:
+                pass
+        devs.sort()
+        if device_index >= len(devs):
+            return
+        bus, devnum = devs[device_index]
+        node = f"/dev/bus/usb/{bus:03d}/{devnum:03d}"
+        try:
+            with open(node, "wb") as fh:
+                fcntl.ioctl(fh, USBDEVFS_RESET, 0)
+            time.sleep(0.5)
+            print(f"[Scanner] USB reset: {node}")
+        except Exception as e:
+            print(f"[Scanner] USB reset failed ({node}): {e}")
+
+    @staticmethod
     def index_for_serial(lib_path_hint: str, serial: str) -> int:
         import ctypes
         lib = ctypes.CDLL(lib_path_hint)
@@ -432,7 +468,9 @@ class _RtlSdr:
         self._lib.rtlsdr_set_sample_rate(self._dev, int(rate))
 
     def set_center_freq(self, freq: int):
-        self._lib.rtlsdr_set_center_freq(self._dev, int(freq))
+        r = self._lib.rtlsdr_set_center_freq(self._dev, int(freq))
+        if r != 0:
+            raise RuntimeError(f"rtlsdr_set_center_freq({freq/1e6:.3f} MHz) failed: {r}")
 
     def set_freq_correction(self, ppm: int):
         self._lib.rtlsdr_set_freq_correction(self._dev, int(ppm))
@@ -452,8 +490,10 @@ class _RtlSdr:
         n_bytes = num_samples * 2          # interleaved I + Q, 1 byte each
         buf     = (ctypes.c_uint8 * n_bytes)()
         n_read  = ctypes.c_int()
-        self._lib.rtlsdr_read_sync(
+        r = self._lib.rtlsdr_read_sync(
             self._dev, buf, ctypes.c_int(n_bytes), ctypes.byref(n_read))
+        if r != 0:
+            raise RuntimeError(f"rtlsdr_read_sync failed: {r}")
         raw = np.frombuffer(buf, dtype=np.uint8).astype(np.float32)
         iq  = (raw - 127.5) / 127.5
         return (iq[::2] + 1j * iq[1::2]).astype(np.complex64)
