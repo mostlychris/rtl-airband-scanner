@@ -36,6 +36,38 @@ _RTLFM_NOISE = re.compile(
     re.IGNORECASE,
 )
 
+def _usb_reset_rtlsdr() -> bool:
+    """
+    Send USBDEVFS_RESET to every Realtek (RTL-SDR) USB device found in sysfs.
+    Equivalent to a physical unplug/replug without needing root — works as long
+    as the calling user can open /dev/bus/usb/* (plugdev group on most Pi setups).
+    Runs in a daemon thread so a D-state hang in the ioctl doesn't block forever.
+    Returns True if at least one device was reset successfully.
+    """
+    import glob, fcntl, os, threading
+    USBDEVFS_RESET = 0x5514
+    result = [False]
+
+    def _do():
+        for vp in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+            try:
+                if open(vp).read().strip() != "0bda":   # Realtek VID
+                    continue
+                base = os.path.dirname(vp)
+                bus = int(open(os.path.join(base, "busnum")).read())
+                dev = int(open(os.path.join(base, "devnum")).read())
+                with open(f"/dev/bus/usb/{bus:03d}/{dev:03d}", "wb") as fh:
+                    fcntl.ioctl(fh, USBDEVFS_RESET, 0)
+                result[0] = True
+            except Exception:
+                continue
+
+    t = threading.Thread(target=_do, daemon=True)
+    t.start()
+    t.join(timeout=5.0)
+    return result[0]
+
+
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -626,10 +658,17 @@ class RTLFMScanner:
             else:
                 consecutive_failures += 1
                 if consecutive_failures >= 3:
-                    raise RuntimeError(
-                        f"rtl_fm produced no audio {consecutive_failures} times in a row "
-                        f"— USB device may be hung")
-                time.sleep(1.0)   # back off before retrying
+                    print("[Scanner] USB device appears hung — attempting reset")
+                    if _usb_reset_rtlsdr():
+                        print("[Scanner] USB reset sent — waiting for re-enumeration")
+                        consecutive_failures = 0
+                        time.sleep(3.0)
+                    else:
+                        raise RuntimeError(
+                            "rtl_fm no audio 3 times and USB reset failed "
+                            "— device may need a power cycle")
+                else:
+                    time.sleep(1.0)
 
             scan_idx = (scan_idx + 1) % n_freqs
             if n_freqs > 1 and self._running:
