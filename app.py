@@ -150,12 +150,16 @@ const WORKLET_SRC = `
 class PCMRingProcessor extends AudioWorkletProcessor {
   constructor(options) {
     super();
-    this._SIZE  = 96000;
-    this._ring  = new Float32Array(this._SIZE);
-    this._wp    = 0;
-    this._rp    = 0.0;   // float — sub-sample read position for resampling
-    // ratio < 1 when context rate > source rate (e.g. 24000/48000 = 0.5)
-    this._ratio = (options.processorOptions.inRate || 24000) / sampleRate;
+    this._SIZE   = 96000;
+    this._ring   = new Float32Array(this._SIZE);
+    this._wp     = 0;
+    this._rp     = 0.0;    // float for sub-sample interpolation
+    this._ratio  = (options.processorOptions.inRate || 24000) / sampleRate;
+    // Prime threshold: accumulate 250 ms of source audio before playing.
+    // This creates a standing cushion so chunk-boundary jitter never
+    // causes the ring to underrun mid-transmission.
+    this._PRIME  = Math.round((options.processorOptions.inRate || 24000) * 0.25);
+    this._primed = false;
     this.port.onmessage = ({ data }) => {
       const n     = data.length;
       const avail = this._wp - Math.floor(this._rp);
@@ -168,9 +172,16 @@ class PCMRingProcessor extends AudioWorkletProcessor {
   }
   process(inputs, outputs) {
     const out   = outputs[0][0];
+    const avail = this._wp - Math.floor(this._rp);
+    // Hold silence until the ring has a full cushion.  Re-prime after any
+    // complete drain so a gap in transmission resets the buffer cleanly.
+    if (!this._primed) {
+      if (avail >= this._PRIME) this._primed = true;
+      else { out.fill(0); return true; }
+    }
     const ratio = this._ratio;
     const need  = Math.ceil(out.length * ratio) + 1;
-    if (this._wp - Math.floor(this._rp) >= need) {
+    if (avail >= need) {
       for (let i = 0; i < out.length; i++) {
         const pos = this._rp + i * ratio;
         const lo  = Math.floor(pos);
@@ -182,6 +193,7 @@ class PCMRingProcessor extends AudioWorkletProcessor {
       this._rp += out.length * ratio;
     } else {
       out.fill(0);
+      if (avail === 0) this._primed = false;  // re-prime after complete drain
     }
     return true;
   }
