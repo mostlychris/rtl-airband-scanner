@@ -19,7 +19,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-AUDIO_RATE = 25000   # PCM output rate; must match -r flag passed to rtl_fm
+AUDIO_RATE = 24000   # PCM output rate for the librtlsdr path (hw_rate=1,008,000 / 42)
 
 
 # Silence chunk sent to audio WebSocket clients every 5 s when no signal is
@@ -140,7 +140,7 @@ let ws, wsRetry=0;
 let actItems = [];
 
 // ── Audio (Web Audio API, PCM via WebSocket) ───────────────────────────────────
-let PCM_RATE  = 25000;
+let PCM_RATE  = 24000;
 let actx      = null;
 let audFilt   = null;   // persistent lowpass filter node
 let audWs     = null;
@@ -631,13 +631,22 @@ class RTLFMScanner:
         # Expected phase-difference variance for pure AWGN (uniform in [-π, π]).
         # A captured FM carrier drives var(Δφ) ≪ this value.
         _NOISE_VAR = np.pi ** 2 / 3.0
+        # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
+        # FM transmitters apply pre-emphasis (6 dB/octave boost above 300 Hz); without
+        # de-emphasis the audio sounds thin and hissy because high-frequency noise was
+        # also boosted by the transmitter.
+        _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
+        _deemph_beta  = 1.0 - _deemph_alpha
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
               f"decimate×{decimate}→{self.audio_rate} Hz, "
               f"scan_dwell={self.scan_dwell}s, squelch_hold={self.squelch_hold}s, "
               f"squelch_rms={self.squelch_rms}"
-              + (f", per-channel: {overrides}" if overrides else ""))
+              + (f", per-channel overrides: {overrides}" if overrides else ""))
+        for fk in freq_keys:
+            thr = self.channel_squelch.get(fk, self.squelch_rms)
+            print(f"[Scanner]   {fk} MHz  thr={thr}  ({20*np.log10(max(thr,1e-9)):.1f} dB)")
 
         dev_index = int(self.device) if self.device.isdigit() else \
                     _RtlSdr.index_for_serial("librtlsdr.so.0", self.device)
@@ -680,7 +689,8 @@ class RTLFMScanner:
                 dwell_start  = time.time()
                 squelch_open = False
                 last_sig_t   = 0.0
-                last_iq      = None   # last IQ sample of previous chunk for FM continuity
+                last_iq      = None        # last IQ sample for cross-chunk FM continuity
+                deemph_z     = 0.0         # de-emphasis IIR state (reset per frequency)
 
                 while self._running:
                     raw = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
@@ -699,6 +709,13 @@ class RTLFMScanner:
                     audio = demod[:n].reshape(-1, decimate).mean(axis=1).astype(np.float32)
                     np.multiply(audio, fm_scale, out=audio)
                     np.clip(audio, -1.0, 1.0, out=audio)
+                    # De-emphasis: 1-pole IIR (y[n] = β·x[n] + α·y[n-1]).
+                    # Apply in-place; carry state across chunks for continuity.
+                    z = deemph_z
+                    for i in range(len(audio)):
+                        z = _deemph_beta * audio[i] + _deemph_alpha * z
+                        audio[i] = z
+                    deemph_z = z
 
                     # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
                     # a captured FM carrier drives it near zero.
