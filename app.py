@@ -615,7 +615,7 @@ class RTLFMScanner:
     frequencies with set_center_freq(). FM demodulation and decimation are
     done in Python/numpy — no rtl_fm subprocess, no USB open/close per hop.
     """
-    CHUNK_SECS = 0.1   # seconds of audio per processing chunk
+    CHUNK_SECS = 0.05  # seconds of audio per processing chunk (smaller = faster scan response)
 
     def __init__(self, name: str, channels: dict[str, str],
                  squelch: int = 70, squelch_rms: float = 0.003,
@@ -772,7 +772,6 @@ class RTLFMScanner:
                 dwell_start     = time.time()
                 squelch_open    = False
                 last_sig_t      = 0.0
-                last_iq         = None   # last IF-rate IQ sample for cross-chunk FM continuity
                 deemph_z        = 0.0    # de-emphasis IIR state (reset per frequency)
                 _last_dbg_state = None   # for change-only debug printing
 
@@ -788,15 +787,15 @@ class RTLFMScanner:
                     iq_if = raw[:n_iq].reshape(-1, decimate).mean(axis=1)  # complex64
                     iq_if -= iq_if.mean()  # remove RTL-SDR LO leakage (DC offset at 0 Hz)
 
-                    # Stage 2 — FM discriminator at audio_rate with cross-chunk continuity.
-                    if last_iq is not None:
-                        buf = np.empty(len(iq_if) + 1, dtype=np.complex64)
-                        buf[0]  = last_iq
-                        buf[1:] = iq_if
-                        demod = np.angle(buf[1:] * np.conj(buf[:-1]))
-                    else:
-                        demod = np.angle(iq_if[1:] * np.conj(iq_if[:-1]))
-                    last_iq = iq_if[-1]   # IF-rate sample, not raw
+                    # Stage 2 — FM discriminator at audio_rate.
+                    # Cross-chunk carry-over (last_iq) was removed: numpy processing
+                    # takes ~10 ms between reads, so the "last" and "first" samples of
+                    # adjacent chunks are ~10 ms apart in real time, not 42 µs.
+                    # angle() over a 10 ms gap aliases violently → a clipped spike =
+                    # a loud click at exactly the chunk rate.  Using only within-chunk
+                    # consecutive pairs loses one FM sample per chunk (imperceptible)
+                    # and eliminates the click entirely.
+                    demod = np.angle(iq_if[1:] * np.conj(iq_if[:-1]))
 
                     audio = (demod * fm_scale).astype(np.float32)
                     np.clip(audio, -1.0, 1.0, out=audio)
