@@ -628,7 +628,10 @@ class RTLFMScanner:
         # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
         chunk_n    = ((int(hw_rate * self.CHUNK_SECS) + 255) // 256) * 256
 
-        fm_scale  = hw_rate / (2.0 * np.pi * 5000.0)
+        # FM scale is based on IF rate (audio_rate), not hw_rate.
+        # IQ decimation happens before the discriminator, so each angle
+        # step represents 1/audio_rate seconds of phase rotation.
+        fm_scale  = self.audio_rate / (2.0 * np.pi * 5000.0)
         # Expected phase-difference variance for pure AWGN (uniform in [-π, π]).
         # A captured FM carrier drives var(Δφ) ≪ this value.
         _NOISE_VAR = np.pi ** 2 / 3.0
@@ -690,25 +693,31 @@ class RTLFMScanner:
                 dwell_start  = time.time()
                 squelch_open = False
                 last_sig_t   = 0.0
-                last_iq      = None        # last IQ sample for cross-chunk FM continuity
+                last_iq      = None        # last IF-rate IQ sample for cross-chunk FM continuity
                 deemph_z     = 0.0         # de-emphasis IIR state (reset per frequency)
 
                 while self._running:
                     raw = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
 
-                    # FM discriminator — carry last sample across chunk boundaries so
-                    # the phase difference at the seam is computed rather than dropped.
+                    # Stage 1 — IQ decimate to audio_rate BEFORE FM discriminating.
+                    # Averaging 42 raw samples coherently reduces noise power 42×
+                    # (signal adds coherently, noise averages down). This pushes the
+                    # carrier-to-noise ratio above the FM threshold so the discriminator
+                    # sees signal rather than wideband noise.
+                    n_iq  = len(raw) // decimate * decimate
+                    iq_if = raw[:n_iq].reshape(-1, decimate).mean(axis=1)  # complex64
+
+                    # Stage 2 — FM discriminator at audio_rate with cross-chunk continuity.
                     if last_iq is not None:
-                        buf = np.empty(chunk_n + 1, dtype=np.complex64)
+                        buf = np.empty(len(iq_if) + 1, dtype=np.complex64)
                         buf[0]  = last_iq
-                        buf[1:] = raw
+                        buf[1:] = iq_if
                         demod = np.angle(buf[1:] * np.conj(buf[:-1]))
                     else:
-                        demod = np.angle(raw[1:] * np.conj(raw[:-1]))
-                    last_iq = raw[-1]
-                    n     = len(demod) // decimate * decimate
-                    audio = demod[:n].reshape(-1, decimate).mean(axis=1).astype(np.float32)
-                    np.multiply(audio, fm_scale, out=audio)
+                        demod = np.angle(iq_if[1:] * np.conj(iq_if[:-1]))
+                    last_iq = iq_if[-1]   # IF-rate sample, not raw
+
+                    audio = (demod * fm_scale).astype(np.float32)
                     np.clip(audio, -1.0, 1.0, out=audio)
                     # De-emphasis: 1-pole IIR (y[n] = β·x[n] + α·y[n-1]).
                     audio_f64, zf = lfilter(
