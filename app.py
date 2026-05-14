@@ -690,11 +690,12 @@ class RTLFMScanner:
                 sdr.set_center_freq(freq_hz)
                 sdr.read_samples(chunk_n)   # discard stale samples from previous tune
 
-                dwell_start  = time.time()
-                squelch_open = False
-                last_sig_t   = 0.0
-                last_iq      = None        # last IF-rate IQ sample for cross-chunk FM continuity
-                deemph_z     = 0.0         # de-emphasis IIR state (reset per frequency)
+                dwell_start     = time.time()
+                squelch_open    = False
+                last_sig_t      = 0.0
+                last_iq         = None   # last IF-rate IQ sample for cross-chunk FM continuity
+                deemph_z        = 0.0    # de-emphasis IIR state (reset per frequency)
+                _last_dbg_state = None   # for change-only debug printing
 
                 while self._running:
                     raw = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
@@ -740,8 +741,13 @@ class RTLFMScanner:
                     close_thr = threshold * 0.5
                     active = rms > (close_thr if squelch_open else threshold)
                     if self.debug:
-                        print(f"[squelch] {freq_str}: sig={signal_level:.3f} "
-                              f"({db:.1f} dB)  thr={threshold}")
+                        dbg_state = (freq_str, squelch_open, active)
+                        if dbg_state != _last_dbg_state:
+                            print(f"[squelch] {freq_str}: sig={signal_level:.3f} "
+                                  f"({db:.1f} dB)  thr={threshold}"
+                                  f"  {'OPEN' if squelch_open else 'closed'}"
+                                  f"  {'ACTIVE' if active else 'inactive'}")
+                            _last_dbg_state = dbg_state
 
                     self._emit({"type": "signal", "mount": "sdr",
                                 "db": round(db, 1), "active": active})
