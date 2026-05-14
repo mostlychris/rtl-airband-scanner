@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json, asyncio, threading, argparse, uvicorn
 import numpy as np
+from scipy.signal import lfilter
 from pathlib import Path
 from datetime import datetime
 from collections import deque
@@ -710,12 +711,12 @@ class RTLFMScanner:
                     np.multiply(audio, fm_scale, out=audio)
                     np.clip(audio, -1.0, 1.0, out=audio)
                     # De-emphasis: 1-pole IIR (y[n] = β·x[n] + α·y[n-1]).
-                    # Apply in-place; carry state across chunks for continuity.
-                    z = deemph_z
-                    for i in range(len(audio)):
-                        z = _deemph_beta * audio[i] + _deemph_alpha * z
-                        audio[i] = z
-                    deemph_z = z
+                    audio_f64, zf = lfilter(
+                        [_deemph_beta], [1.0, -_deemph_alpha],
+                        audio.astype(np.float64), zi=np.array([deemph_z])
+                    )
+                    deemph_z = float(zf[0])
+                    audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
 
                     # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
                     # a captured FM carrier drives it near zero.
