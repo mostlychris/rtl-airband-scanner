@@ -241,7 +241,8 @@ function openAudioStream(mount) {
   if (actx && actx.state === 'suspended') actx.resume();
   _initWorklet();   // idempotent — guarded by _wNode and _wStarted
 
-  audWs = new WebSocket('ws://' + location.host + '/ws/audio');
+  const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  audWs = new WebSocket(_wsp + '//' + location.host + '/ws/audio');
   audWs.binaryType = 'arraybuffer';
   audWs.onopen  = () => updateAudioUI();
   audWs.onerror = () => {};
@@ -269,7 +270,8 @@ function closeAudio() {
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
 function connect() {
-  ws = new WebSocket('ws://' + location.host + '/ws');
+  const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(_wsp + '//' + location.host + '/ws');
   ws.onopen  = () => { wsRetry=0; setWsSt(true); };
   ws.onclose = () => { setWsSt(false); setTimeout(connect, Math.min(2000*(++wsRetry),15000)); };
   ws.onmessage = e => onMsg(JSON.parse(e.data));
