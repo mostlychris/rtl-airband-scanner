@@ -96,6 +96,15 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .obtn.skip{background:var(--card2);border:1px solid var(--border);color:var(--text);font-weight:400}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .blink{animation:pulse 1.4s ease-in-out infinite}
+.acontrols{background:var(--card);border-bottom:1px solid var(--border);padding:8px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.acontrols.hidden{display:none}
+.actl{display:flex;align-items:center;gap:6px;font-size:12px}
+.actl label{color:var(--muted);white-space:nowrap;user-select:none}
+input[type=range].aslider{width:80px;accent-color:var(--green);cursor:pointer;vertical-align:middle}
+select.asel{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 6px;font-size:12px;cursor:pointer}
+.atog{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
+.atog input[type=checkbox]{accent-color:var(--green);cursor:pointer}
+.avlbl{font-family:var(--mono);font-size:11px;color:var(--text);min-width:34px;text-align:right}
 </style>
 </head>
 <body>
@@ -115,6 +124,30 @@ main{max-width:1100px;margin:0 auto;padding:20px}
     <span id="aico">🔇</span><span id="albl">Enable Audio</span>
   </button>
 </header>
+<div class="acontrols hidden" id="acontrols">
+  <div class="actl">
+    <label for="aVol">Vol</label>
+    <input type="range" class="aslider" id="aVol" min="0" max="150" value="100" oninput="setVol(this.value)">
+    <span class="avlbl" id="aVolLbl">100%</span>
+  </div>
+  <div class="actl">
+    <label for="aHP">HP</label>
+    <select class="asel" id="aHP" onchange="setHP(this.value)">
+      <option value="0">Off</option>
+      <option value="100">100 Hz</option>
+      <option value="300">300 Hz (PL)</option>
+    </select>
+  </div>
+  <div class="actl">
+    <label for="aLP">LP</label>
+    <input type="range" class="aslider" id="aLP" min="2000" max="8000" step="500" value="3000" oninput="setLP(this.value)">
+    <span class="avlbl" id="aLPLbl">3.0 kHz</span>
+  </div>
+  <label class="atog">
+    <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)">
+    Squelch tail cut
+  </label>
+</div>
 <main>
   <div class="grid" id="grid"></div>
   <div class="acard">
@@ -201,26 +234,50 @@ class PCMRingProcessor extends AudioWorkletProcessor {
 registerProcessor('pcm-ring', PCMRingProcessor);
 `;
 
+// ── Audio settings (persisted in localStorage) ────────────────────────────────
+const A = {
+  vol:    parseFloat(localStorage.getItem('a_vol')    ?? '1'),
+  hp:     parseInt(  localStorage.getItem('a_hp')     ?? '0',   10),
+  lp:     parseInt(  localStorage.getItem('a_lp')     ?? '3000', 10),
+  sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
+};
+let _sqActive = true;   // tracks last squelch state to drive gate transitions
+
 let PCM_RATE  = 24000;
 let actx      = null;
-let audFilt   = null;
+let audHP     = null;   // highpass BiquadFilter
+let audLP     = null;   // lowpass BiquadFilter
+let audVol    = null;   // GainNode — master volume
+let audGate   = null;   // GainNode — squelch tail suppression
 let audWs     = null;
 let audMount  = null;
-let _wNode    = null;   // AudioWorkletNode — non-null once ready
-let _wStarted = false;  // prevents concurrent init calls
+let _wNode    = null;
+let _wStarted = false;
 
 async function _initWorklet() {
   if (_wNode || _wStarted) return;
   _wStarted = true;
   try {
     if (!actx) {
-      // No sampleRate constraint — worklet resamples from PCM_RATE to context rate
-      actx = new AudioContext({ latencyHint: 'interactive' });
-      audFilt = actx.createBiquadFilter();
-      audFilt.type = 'lowpass';
-      audFilt.frequency.value = 3000;
-      audFilt.Q.value = 0.707;
-      audFilt.connect(actx.destination);
+      // No sampleRate constraint — worklet resamples from PCM_RATE to context rate.
+      // Graph: worklet → HP filter → LP filter → Volume → Gate → destination
+      actx   = new AudioContext({ latencyHint: 'interactive' });
+      audHP  = actx.createBiquadFilter();
+      audHP.type = 'highpass';
+      audHP.frequency.value = A.hp || 10;  // 10 Hz ≈ bypass when HP is Off
+      audHP.Q.value = 0.707;
+      audLP  = actx.createBiquadFilter();
+      audLP.type = 'lowpass';
+      audLP.frequency.value = A.lp;
+      audLP.Q.value = 0.707;
+      audVol  = actx.createGain();
+      audVol.gain.value = A.vol;
+      audGate = actx.createGain();
+      audGate.gain.value = 1.0;
+      audHP.connect(audLP);
+      audLP.connect(audVol);
+      audVol.connect(audGate);
+      audGate.connect(actx.destination);
     }
     if (!actx.audioWorklet) {
       // AudioWorklet requires a secure context (HTTPS or localhost).
@@ -235,7 +292,7 @@ async function _initWorklet() {
       outputChannelCount: [1],
       processorOptions: { inRate: PCM_RATE },
     });
-    _wNode.connect(audFilt || actx.destination);
+    _wNode.connect(audHP);
     console.log('[audio] worklet ready — context rate', actx.sampleRate,
                 'Hz, PCM rate', PCM_RATE, 'Hz, ratio', (PCM_RATE / actx.sampleRate).toFixed(4));
   } catch (e) {
@@ -250,6 +307,13 @@ function openAudioStream(mount) {
                 audWs.readyState === WebSocket.CONNECTING)) return;
   if (audWs) { audWs.close(); audWs = null; }
   audMount = mount;
+  // Reset squelch gate to open on every new stream start so we never
+  // get stuck silent if the gate was closed when audio was last stopped.
+  _sqActive = true;
+  if (audGate && actx) {
+    audGate.gain.cancelScheduledValues(actx.currentTime);
+    audGate.gain.value = 1.0;
+  }
   if (actx && actx.state === 'suspended') actx.resume();
   _initWorklet();   // idempotent — guarded by _wNode and _wStarted
 
@@ -318,10 +382,28 @@ function onMsg(m) {
     updateCard(m.mount);
   } else if (m.type === 'signal') {
     const d = document.getElementById('sqfill_' + eid(m.mount));
-    if (!d) return;
-    const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
-    d.style.width = pct + '%';
-    d.className = 'sqfill' + (m.active ? ' active' : '');
+    if (d) {
+      const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
+      d.style.width = pct + '%';
+      d.className = 'sqfill' + (m.active ? ' active' : '');
+    }
+    // Squelch tail suppression: gate audio closed on signal drop, open on signal open.
+    // Only applied to the currently playing mount so background activity is ignored.
+    if (A.sqtail && audGate && actx && m.mount === (audMount || 'sdr')) {
+      const now = actx.currentTime;
+      if (m.active && !_sqActive) {
+        // Signal opened — ramp up in ~10 ms
+        audGate.gain.cancelScheduledValues(now);
+        audGate.gain.setValueAtTime(audGate.gain.value, now);
+        audGate.gain.linearRampToValueAtTime(1.0, now + 0.01);
+      } else if (!m.active && _sqActive) {
+        // Signal dropped — ramp down in ~50 ms to mute squelch tail noise
+        audGate.gain.cancelScheduledValues(now);
+        audGate.gain.setValueAtTime(audGate.gain.value, now);
+        audGate.gain.linearRampToValueAtTime(0.0, now + 0.05);
+      }
+      _sqActive = m.active;
+    }
   } else if (m.type === 'conn') {
     const s = S.streams[m.mount]; if (!s) return;
     s.connected = m.connected;
@@ -442,6 +524,7 @@ function enableAudio() {
 }
 function closeOverlay() { document.getElementById('overlay').classList.add('hidden'); }
 function updateAudioUI() {
+  document.getElementById('acontrols').classList.toggle('hidden', !S.audioOn);
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
   const connected = audWs && audWs.readyState === WebSocket.OPEN;
@@ -459,8 +542,47 @@ function updateAudioUI() {
   }
 }
 
+// ── Audio filter / volume controls ────────────────────────────────────────────
+function setVol(v) {
+  A.vol = v / 100;
+  localStorage.setItem('a_vol', A.vol);
+  document.getElementById('aVolLbl').textContent = v + '%';
+  if (audVol) audVol.gain.value = A.vol;
+}
+function setHP(v) {
+  A.hp = parseInt(v, 10);
+  localStorage.setItem('a_hp', A.hp);
+  if (audHP) audHP.frequency.value = A.hp || 10;
+}
+function setLP(v) {
+  A.lp = parseInt(v, 10);
+  localStorage.setItem('a_lp', A.lp);
+  document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
+  if (audLP) audLP.frequency.value = A.lp;
+}
+function setSqTail(v) {
+  A.sqtail = v;
+  localStorage.setItem('a_sqtail', v);
+  // Immediately open the gate when disabling suppression; if enabling,
+  // reflect the current signal state.
+  if (audGate && actx) {
+    audGate.gain.cancelScheduledValues(actx.currentTime);
+    audGate.gain.value = (!v || _sqActive) ? 1.0 : 0.0;
+  }
+}
+function initControls() {
+  const vol = Math.round(A.vol * 100);
+  document.getElementById('aVol').value = vol;
+  document.getElementById('aVolLbl').textContent = vol + '%';
+  document.getElementById('aLP').value = A.lp;
+  document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
+  document.getElementById('aHP').value = String(A.hp);
+  document.getElementById('aSqTail').checked = A.sqtail;
+}
+
 // ── Init ───────────────────────────────────────────────────────────────────────
 connect();
+initControls();
 setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
 </script>
 </body>
