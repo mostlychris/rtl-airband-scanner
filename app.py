@@ -906,6 +906,17 @@ class RTLFMScanner:
             # set_center_freq and reset_buffer must be called while async is stopped.
             sdr.set_center_freq(freq_hz)
             sdr.reset_buffer()
+            # librtlsdr prints "Allocating 15 zero-copy buffers" directly to fd 2
+            # on every rtlsdr_read_async call.  Redirect stderr to /dev/null for
+            # the duration of async init; restore it once the first callback fires
+            # (which only happens after initialization is complete).
+            _saved_stderr = None
+            if not self.debug:
+                import os as _os
+                _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+                _saved_stderr = _os.dup(2)
+                _os.dup2(_devnull, 2)
+                _os.close(_devnull)
             t = threading.Thread(
                 target=sdr.start_async,
                 args=(_cb,),
@@ -915,10 +926,17 @@ class RTLFMScanner:
             t.start()
             _reader_thread[0] = t
             # Discard first callback — contains samples buffered before the retune.
+            # Restore stderr here: the first callback fires only after librtlsdr
+            # finishes its initialization (and has already printed the message).
             try:
                 iq_q.get(timeout=5.0)
             except _q.Empty:
                 raise RuntimeError("rtlsdr async reader did not deliver samples — device stalled?")
+            finally:
+                if _saved_stderr is not None:
+                    import os as _os
+                    _os.dup2(_saved_stderr, 2)
+                    _os.close(_saved_stderr)
 
         try:
             sdr.set_sample_rate(hw_rate)
