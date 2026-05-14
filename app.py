@@ -190,7 +190,7 @@ function openAudioStream(mount) {
     for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
     const src = actx.createBufferSource();
     src.buffer = buf; src.connect(audFilt || actx.destination);
-    if (nextAt < now + 0.05) nextAt = now + 0.05;
+    if (nextAt < now + 0.3) nextAt = now + 0.3;
     src.start(nextAt);
     nextAt += buf.duration;
   };
@@ -735,7 +735,10 @@ class RTLFMScanner:
                     signal_level = 1.0 - noise_ratio
                     rms    = signal_level
                     db     = 20.0 * np.log10(max(rms, 1e-9))
-                    active = rms > threshold
+                    # Hysteresis: squelch opens above threshold, stays open above
+                    # half-threshold so voice pauses don't retrigger the scanner.
+                    close_thr = threshold * 0.5
+                    active = rms > (close_thr if squelch_open else threshold)
                     if self.debug:
                         print(f"[squelch] {freq_str}: sig={signal_level:.3f} "
                               f"({db:.1f} dB)  thr={threshold}")
