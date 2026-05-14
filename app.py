@@ -140,66 +140,108 @@ const S = { streams:{}, playing:null, audioOn:false, locked:null };
 let ws, wsRetry=0;
 let actItems = [];
 
-// ── Audio (Web Audio API, PCM via WebSocket) ───────────────────────────────────
+// ── Audio (Web Audio API — AudioWorklet ring buffer) ───────────────────────────
+//
+// The worklet runs in the browser's audio rendering thread and pulls 128 samples
+// (~5.3 ms at 24 kHz) from an internal ring buffer every render quantum.  PCM
+// chunks from the WebSocket are transferred (zero-copy) into the ring via
+// port.postMessage.  Because the worklet is decoupled from WebSocket delivery
+// timing, network jitter and variable chunk sizes cause no gaps or pulsing.
+const WORKLET_SRC = `
+class PCMRingProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._SIZE = 96000;                      // 4 s headroom at 24 kHz
+    this._ring = new Float32Array(this._SIZE);
+    this._wp   = 0;
+    this._rp   = 0;
+    this.port.onmessage = ({ data }) => {
+      // data is a transferred Float32Array (zero-copy from main thread)
+      const n     = data.length;
+      const avail = this._wp - this._rp;
+      const space = this._SIZE - avail;
+      // Overrun: drop oldest samples rather than stalling
+      if (n > space) this._rp = this._wp - this._SIZE + n;
+      for (let i = 0; i < n; i++)
+        this._ring[(this._wp + i) % this._SIZE] = data[i];
+      this._wp += n;
+    };
+  }
+  process(inputs, outputs) {
+    const out = outputs[0][0];
+    if (this._wp - this._rp >= out.length) {
+      for (let i = 0; i < out.length; i++)
+        out[i] = this._ring[(this._rp + i) % this._SIZE];
+      this._rp += out.length;
+    } else {
+      out.fill(0);   // underrun: output silence until ring refills
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-ring', PCMRingProcessor);
+`;
+
 let PCM_RATE  = 24000;
 let actx      = null;
-let audFilt   = null;   // persistent lowpass filter node
+let audFilt   = null;
 let audWs     = null;
 let audMount  = null;
-let nextAt    = 0;
+let _wNode    = null;   // AudioWorkletNode
+let _wReady   = null;   // Promise — resolves once worklet module is loaded
 
-function initAudioCtx() {
-  if (actx) return;
-  actx = new AudioContext({ latencyHint: 'interactive' });
-  audFilt = actx.createBiquadFilter();
-  audFilt.type = 'lowpass';
-  audFilt.frequency.value = 3000;  // 3 kHz: pass voice, block FM noise above Nyquist
-  audFilt.Q.value = 0.707;         // Butterworth — no resonance peak
-  audFilt.connect(actx.destination);
+async function _initWorklet() {
+  if (_wNode) return;
+  if (!actx) {
+    actx = new AudioContext({ latencyHint: 'interactive', sampleRate: PCM_RATE });
+    audFilt = actx.createBiquadFilter();
+    audFilt.type = 'lowpass';
+    audFilt.frequency.value = 3000;
+    audFilt.Q.value = 0.707;
+    audFilt.connect(actx.destination);
+  }
+  const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
+  const burl = URL.createObjectURL(blob);
+  try   { await actx.audioWorklet.addModule(burl); }
+  finally { URL.revokeObjectURL(burl); }
+  _wNode = new AudioWorkletNode(actx, 'pcm-ring', { outputChannelCount: [1] });
+  _wNode.connect(audFilt || actx.destination);
 }
 
 function openAudioStream(mount) {
   if (audWs && audWs.readyState === WebSocket.OPEN) return;
   if (audWs) { audWs.close(); audWs = null; }
   audMount = mount;
-  nextAt   = 0;
-  initAudioCtx();
   if (actx && actx.state === 'suspended') actx.resume();
+  if (!_wReady) _wReady = _initWorklet();
 
   audWs = new WebSocket('ws://' + location.host + '/ws/audio');
   audWs.binaryType = 'arraybuffer';
   audWs.onopen  = () => updateAudioUI();
-  audWs.onerror = () => {};  // onclose always follows
+  audWs.onerror = () => {};
   audWs.onclose = () => {
     const m = audMount;
-    audMount = null; nextAt = 0; updateAudioUI();
-    // Auto-reconnect when audio is still enabled (i.e. closed unexpectedly)
+    audMount = null; updateAudioUI();
     if (S.audioOn && m) setTimeout(() => { if (S.audioOn) openAudioStream(m); }, 2000);
   };
-
-  const MAX_QUEUE = 1.5;
   audWs.onmessage = ({ data }) => {
     if (!actx) return;
     if (actx.state === 'suspended') { actx.resume(); return; }
     if (actx.state !== 'running') return;
-    const now = actx.currentTime;
-    if (nextAt > now + MAX_QUEUE) return;
-    const s16 = new Int16Array(data);
-    const buf = actx.createBuffer(1, s16.length, PCM_RATE);
-    const ch  = buf.getChannelData(0);
-    for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
-    const src = actx.createBufferSource();
-    src.buffer = buf; src.connect(audFilt || actx.destination);
-    if (nextAt < now + 0.05) nextAt = now + 0.05;
-    src.start(nextAt);
-    nextAt += buf.duration;
+    _wReady.then(() => {
+      if (!_wNode) return;
+      const s16 = new Int16Array(data);
+      const f32 = new Float32Array(s16.length);
+      for (let i = 0; i < s16.length; i++) f32[i] = s16[i] / 32768;
+      _wNode.port.postMessage(f32, [f32.buffer]);  // transfer — zero copy
+    });
   };
 }
 
 function closeAudio() {
   if (audWs) { audWs.close(); audWs = null; }
-  audMount = null; nextAt = 0;
-  if (actx) actx.suspend();  // suspend rather than close — avoids gesture requirement on re-enable
+  audMount = null;
+  if (actx) actx.suspend();
 }
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
@@ -771,20 +813,8 @@ class RTLFMScanner:
                                 "time":  now.isoformat(),
                             })
 
-                    # Emit audio for every chunk while squelch is open — including
-                    # the hold window after signal drops — to avoid pulsing from
-                    # threshold crossings within a single transmission.
-                    #
-                    # Append a 15 ms ramp-to-zero tail so buf.duration (≈115 ms)
-                    # exceeds the delivery interval (≈105 ms hardware + overhead).
-                    # When buf.duration > delivery_interval, nextAt runs AHEAD of
-                    # actx.currentTime instead of behind it, eliminating the
-                    # per-chunk 5 ms gap that created the 10 Hz audio tremolo.
                     if squelch_open:
-                        n_tail = int(self.audio_rate * 0.015)
-                        tail   = np.linspace(float(audio[-1]) if len(audio) else 0.0,
-                                             0.0, n_tail, dtype=np.float32)
-                        pcm = (np.concatenate([audio, tail]) * 32767).astype(np.int16).tobytes()
+                        pcm = (audio * 32767).astype(np.int16).tobytes()
                         self._emit_audio(pcm)
 
                     if not active:
