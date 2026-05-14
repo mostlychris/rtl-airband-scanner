@@ -589,6 +589,33 @@ class _RtlSdr:
     def reset_buffer(self):
         self._lib.rtlsdr_reset_buffer(self._dev)
 
+    def start_async(self, callback, buf_len: int = 0):
+        """
+        Block until cancel_async() is called, invoking callback(samples) for
+        each USB packet.  Runs rtlsdr_read_async in the calling thread — run
+        this in a daemon thread.  buf_len must be a multiple of 512 bytes.
+        """
+        import ctypes
+        _CB  = ctypes.CFUNCTYPE(None, ctypes.POINTER(ctypes.c_uint8),
+                                 ctypes.c_uint32, ctypes.c_void_p)
+        _AT  = ctypes.c_ubyte * buf_len   # pre-built array type — avoids per-call alloc
+
+        def _c_cb(buf, length, _ctx):
+            n   = int(length)
+            # Zero-copy view of librtlsdr's buffer, then .copy() before it's reused
+            raw = np.frombuffer(
+                _AT.from_address(ctypes.cast(buf, ctypes.c_void_p).value),
+                dtype=np.uint8, count=n).copy()
+            f = (raw.astype(np.float32) - 127.5) / 127.5
+            callback((f[::2] + 1j * f[1::2]).astype(np.complex64))
+
+        self._async_cb = _CB(_c_cb)   # keep ref — GC of this crashes the process
+        self._lib.rtlsdr_read_async(self._dev, self._async_cb, None,
+                                     ctypes.c_uint32(0), ctypes.c_uint32(buf_len))
+
+    def cancel_async(self):
+        self._lib.rtlsdr_cancel_async(self._dev)
+
     def read_samples(self, num_samples: int) -> "np.ndarray":
         import ctypes
         n_bytes = num_samples * 2          # interleaved I + Q, 1 byte each
@@ -695,6 +722,8 @@ class RTLFMScanner:
 
     def _run(self):
         import time
+        import queue as _q
+        import threading
 
         freq_keys = list(self.channels.keys())
         n_freqs   = len(freq_keys)
@@ -705,24 +734,17 @@ class RTLFMScanner:
         # Align to USB max-packet-size boundary: RTL-SDR never sends short packets,
         # so a non-multiple-of-512 transfer causes LIBUSB_ERROR_OVERFLOW (-8).
         # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
-        chunk_n    = ((int(hw_rate * self.CHUNK_SECS) + 255) // 256) * 256
+        chunk_n = ((int(hw_rate * self.CHUNK_SECS) + 255) // 256) * 256
+        buf_len = chunk_n * 2   # bytes per rtlsdr_read_async callback
 
-        # FM scale is based on IF rate (audio_rate), not hw_rate.
-        # IQ decimation happens before the discriminator, so each angle
-        # step represents 1/audio_rate seconds of phase rotation.
-        fm_scale  = self.audio_rate / (2.0 * np.pi * 5000.0)
-        # Expected phase-difference variance for pure AWGN (uniform in [-π, π]).
-        # A captured FM carrier drives var(Δφ) ≪ this value.
-        _NOISE_VAR = np.pi ** 2 / 3.0
+        fm_scale      = self.audio_rate / (2.0 * np.pi * 5000.0)
+        _NOISE_VAR    = np.pi ** 2 / 3.0
         # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
-        # FM transmitters apply pre-emphasis (6 dB/octave boost above 300 Hz); without
-        # de-emphasis the audio sounds thin and hissy because high-frequency noise was
-        # also boosted by the transmitter.
         _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
         _deemph_beta  = 1.0 - _deemph_alpha
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
-        print(f"[Scanner] librtlsdr/ctypes — {n_freqs} freq(s), hw_rate={hw_rate}, "
+        print(f"[Scanner] librtlsdr/async — {n_freqs} freq(s), hw_rate={hw_rate}, "
               f"decimate×{decimate}→{self.audio_rate} Hz, "
               f"scan_dwell={self.scan_dwell}s, squelch_hold={self.squelch_hold}s, "
               f"squelch_rms={self.squelch_rms}"
@@ -735,6 +757,47 @@ class RTLFMScanner:
                     _RtlSdr.index_for_serial("librtlsdr.so.0", self.device)
         sdr = _RtlSdr(device_index=dev_index)
 
+        iq_q           = _q.Queue(maxsize=32)
+        _reader_thread = [None]
+
+        def _cb(samples):
+            # Drop oldest chunk if the processing loop is falling behind so the
+            # queue never fills with stale audio.
+            if iq_q.full():
+                try: iq_q.get_nowait()
+                except _q.Empty: pass
+            try: iq_q.put_nowait(samples)
+            except _q.Full: pass
+
+        def _stop_reader():
+            try: sdr.cancel_async()
+            except Exception: pass
+            t = _reader_thread[0]
+            if t is not None:
+                t.join(timeout=3.0)
+                _reader_thread[0] = None
+            while True:
+                try: iq_q.get_nowait()
+                except _q.Empty: break
+
+        def _start_reader(freq_hz):
+            # set_center_freq and reset_buffer must be called while async is stopped.
+            sdr.set_center_freq(freq_hz)
+            sdr.reset_buffer()
+            t = threading.Thread(
+                target=sdr.start_async,
+                args=(_cb,),
+                kwargs={"buf_len": buf_len},
+                daemon=True,
+            )
+            t.start()
+            _reader_thread[0] = t
+            # Discard first callback — contains samples buffered before the retune.
+            try:
+                iq_q.get(timeout=5.0)
+            except _q.Empty:
+                raise RuntimeError("rtlsdr async reader did not deliver samples — device stalled?")
+
         try:
             sdr.set_sample_rate(hw_rate)
             # Tune to the first scan frequency BEFORE applying ppm correction.
@@ -745,12 +808,6 @@ class RTLFMScanner:
             sdr.set_center_freq(int(float(freq_keys[0]) * 1_000_000))
             sdr.set_freq_correction(self.ppm)
             sdr.set_gain(self.gain)
-            sdr.reset_buffer()
-            # One priming read before the scan loop. reset_buffer enables the RTL2832U
-            # DMA engine but leaves it in an idle state where it STALLs control transfers
-            # (I2C, used by set_center_freq). After one completed bulk read, the DMA is
-            # active and co-exists with control transfers for the rest of the session.
-            sdr.read_samples(chunk_n)
 
             self.connected = True
             self._emit({"type": "conn", "mount": "sdr", "connected": True, "error": None})
@@ -766,36 +823,39 @@ class RTLFMScanner:
                 if self.debug:
                     print(f"[scan] → {freq_str} MHz  ({label})")
 
-                sdr.set_center_freq(freq_hz)
-                sdr.read_samples(chunk_n)   # discard stale samples from previous tune
+                _stop_reader()
+                _start_reader(freq_hz)
 
                 dwell_start     = time.time()
                 squelch_open    = False
                 last_sig_t      = 0.0
-                deemph_z        = 0.0    # de-emphasis IIR state (reset per frequency)
-                _last_dbg_state = None   # for change-only debug printing
+                last_iq         = None   # per-frequency; valid across chunks with async continuity
+                deemph_z        = 0.0
+                _last_dbg_state = None
 
                 while self._running:
-                    raw = np.asarray(sdr.read_samples(chunk_n), dtype=np.complex64)
+                    try:
+                        raw = iq_q.get(timeout=5.0)
+                    except _q.Empty:
+                        raise RuntimeError("rtlsdr async read timed out — device stalled?")
 
                     # Stage 1 — IQ decimate to audio_rate BEFORE FM discriminating.
-                    # Averaging 42 raw samples coherently reduces noise power 42×
-                    # (signal adds coherently, noise averages down). This pushes the
-                    # carrier-to-noise ratio above the FM threshold so the discriminator
-                    # sees signal rather than wideband noise.
+                    # Averaging decimate raw samples coherently reduces noise power ×decimate.
                     n_iq  = len(raw) // decimate * decimate
-                    iq_if = raw[:n_iq].reshape(-1, decimate).mean(axis=1)  # complex64
-                    iq_if -= iq_if.mean()  # remove RTL-SDR LO leakage (DC offset at 0 Hz)
+                    iq_if = raw[:n_iq].reshape(-1, decimate).mean(axis=1)
+                    iq_if -= iq_if.mean()   # remove RTL-SDR LO leakage (DC offset at 0 Hz)
 
                     # Stage 2 — FM discriminator at audio_rate.
-                    # Cross-chunk carry-over (last_iq) was removed: numpy processing
-                    # takes ~10 ms between reads, so the "last" and "first" samples of
-                    # adjacent chunks are ~10 ms apart in real time, not 42 µs.
-                    # angle() over a 10 ms gap aliases violently → a clipped spike =
-                    # a loud click at exactly the chunk rate.  Using only within-chunk
-                    # consecutive pairs loses one FM sample per chunk (imperceptible)
-                    # and eliminates the click entirely.
-                    demod = np.angle(iq_if[1:] * np.conj(iq_if[:-1]))
+                    # With rtlsdr_read_async the hardware streams continuously with zero
+                    # inter-callback gaps, so last_iq (the final decimated sample of the
+                    # previous chunk) connects directly to iq_if[0] in time.  Prepending
+                    # it restores cross-chunk phase continuity without aliasing.
+                    if last_iq is not None:
+                        iq_ext = np.concatenate(([last_iq], iq_if))
+                    else:
+                        iq_ext = iq_if
+                    last_iq = iq_if[-1]
+                    demod = np.angle(iq_ext[1:] * np.conj(iq_ext[:-1]))
 
                     audio = (demod * fm_scale).astype(np.float32)
                     np.clip(audio, -1.0, 1.0, out=audio)
@@ -809,7 +869,6 @@ class RTLFMScanner:
 
                     # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
                     # a captured FM carrier drives it near zero.
-                    # signal_level → 0 when silent, → 1 on a strong carrier.
                     noise_ratio  = min(float(np.var(demod)) / _NOISE_VAR, 1.0)
                     signal_level = 1.0 - noise_ratio
                     rms    = signal_level
@@ -872,6 +931,7 @@ class RTLFMScanner:
                 scan_idx = (scan_idx + 1) % n_freqs
 
         finally:
+            _stop_reader()
             try:
                 sdr.close()
             except Exception:
