@@ -706,6 +706,7 @@ class RTLFMScanner:
                     # sees signal rather than wideband noise.
                     n_iq  = len(raw) // decimate * decimate
                     iq_if = raw[:n_iq].reshape(-1, decimate).mean(axis=1)  # complex64
+                    iq_if -= iq_if.mean()  # remove RTL-SDR LO leakage (DC offset at 0 Hz)
 
                     # Stage 2 — FM discriminator at audio_rate with cross-chunk continuity.
                     if last_iq is not None:
