@@ -143,38 +143,45 @@ let actItems = [];
 // ── Audio (Web Audio API — AudioWorklet ring buffer) ───────────────────────────
 //
 // The worklet runs in the browser's audio rendering thread and pulls 128 samples
-// (~5.3 ms at 24 kHz) from an internal ring buffer every render quantum.  PCM
-// chunks from the WebSocket are transferred (zero-copy) into the ring via
-// port.postMessage.  Because the worklet is decoupled from WebSocket delivery
-// timing, network jitter and variable chunk sizes cause no gaps or pulsing.
+// per render quantum from an internal ring buffer, completely decoupled from
+// WebSocket delivery timing.  Linear resampling handles any AudioContext sample
+// rate so no sampleRate constraint is imposed on the AudioContext constructor.
 const WORKLET_SRC = `
 class PCMRingProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
-    this._SIZE = 96000;                      // 4 s headroom at 24 kHz
-    this._ring = new Float32Array(this._SIZE);
-    this._wp   = 0;
-    this._rp   = 0;
+    this._SIZE  = 96000;
+    this._ring  = new Float32Array(this._SIZE);
+    this._wp    = 0;
+    this._rp    = 0.0;   // float — sub-sample read position for resampling
+    // ratio < 1 when context rate > source rate (e.g. 24000/48000 = 0.5)
+    this._ratio = (options.processorOptions.inRate || 24000) / sampleRate;
     this.port.onmessage = ({ data }) => {
-      // data is a transferred Float32Array (zero-copy from main thread)
       const n     = data.length;
-      const avail = this._wp - this._rp;
-      const space = this._SIZE - avail;
-      // Overrun: drop oldest samples rather than stalling
-      if (n > space) this._rp = this._wp - this._SIZE + n;
+      const avail = this._wp - Math.floor(this._rp);
+      if (n > this._SIZE - avail) this._rp = this._wp - this._SIZE + n;
+      const base = this._wp;
       for (let i = 0; i < n; i++)
-        this._ring[(this._wp + i) % this._SIZE] = data[i];
+        this._ring[(base + i) % this._SIZE] = data[i];
       this._wp += n;
     };
   }
   process(inputs, outputs) {
-    const out = outputs[0][0];
-    if (this._wp - this._rp >= out.length) {
-      for (let i = 0; i < out.length; i++)
-        out[i] = this._ring[(this._rp + i) % this._SIZE];
-      this._rp += out.length;
+    const out   = outputs[0][0];
+    const ratio = this._ratio;
+    const need  = Math.ceil(out.length * ratio) + 1;
+    if (this._wp - Math.floor(this._rp) >= need) {
+      for (let i = 0; i < out.length; i++) {
+        const pos = this._rp + i * ratio;
+        const lo  = Math.floor(pos);
+        const hi  = lo + 1;
+        const t   = pos - lo;
+        out[i]    = this._ring[lo % this._SIZE] * (1 - t) +
+                    this._ring[hi % this._SIZE] * t;
+      }
+      this._rp += out.length * ratio;
     } else {
-      out.fill(0);   // underrun: output silence until ring refills
+      out.fill(0);
     }
     return true;
   }
@@ -187,33 +194,52 @@ let actx      = null;
 let audFilt   = null;
 let audWs     = null;
 let audMount  = null;
-let _wNode    = null;   // AudioWorkletNode
-let _wReady   = null;   // Promise — resolves once worklet module is loaded
+let _wNode    = null;   // AudioWorkletNode — non-null once ready
+let _wStarted = false;  // prevents concurrent init calls
 
 async function _initWorklet() {
-  if (_wNode) return;
-  if (!actx) {
-    actx = new AudioContext({ latencyHint: 'interactive', sampleRate: PCM_RATE });
-    audFilt = actx.createBiquadFilter();
-    audFilt.type = 'lowpass';
-    audFilt.frequency.value = 3000;
-    audFilt.Q.value = 0.707;
-    audFilt.connect(actx.destination);
+  if (_wNode || _wStarted) return;
+  _wStarted = true;
+  try {
+    if (!actx) {
+      // No sampleRate constraint — worklet resamples from PCM_RATE to context rate
+      actx = new AudioContext({ latencyHint: 'interactive' });
+      audFilt = actx.createBiquadFilter();
+      audFilt.type = 'lowpass';
+      audFilt.frequency.value = 3000;
+      audFilt.Q.value = 0.707;
+      audFilt.connect(actx.destination);
+    }
+    if (!actx.audioWorklet) {
+      // AudioWorklet requires a secure context (HTTPS or localhost).
+      // On plain HTTP with a LAN IP, Chrome/Firefox disable it.
+      throw new Error('AudioWorklet unavailable — serve over HTTPS or via localhost tunnel');
+    }
+    const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
+    const burl = URL.createObjectURL(blob);
+    try   { await actx.audioWorklet.addModule(burl); }
+    finally { URL.revokeObjectURL(burl); }
+    _wNode = new AudioWorkletNode(actx, 'pcm-ring', {
+      outputChannelCount: [1],
+      processorOptions: { inRate: PCM_RATE },
+    });
+    _wNode.connect(audFilt || actx.destination);
+    console.log('[audio] worklet ready — context rate', actx.sampleRate,
+                'Hz, PCM rate', PCM_RATE, 'Hz, ratio', (PCM_RATE / actx.sampleRate).toFixed(4));
+  } catch (e) {
+    console.error('[audio] worklet init failed:', e.message);
+    _wStarted = false;   // allow retry on next openAudioStream call
   }
-  const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
-  const burl = URL.createObjectURL(blob);
-  try   { await actx.audioWorklet.addModule(burl); }
-  finally { URL.revokeObjectURL(burl); }
-  _wNode = new AudioWorkletNode(actx, 'pcm-ring', { outputChannelCount: [1] });
-  _wNode.connect(audFilt || actx.destination);
 }
 
 function openAudioStream(mount) {
-  if (audWs && audWs.readyState === WebSocket.OPEN) return;
+  // Guard against CONNECTING as well as OPEN to prevent duplicate sockets
+  if (audWs && (audWs.readyState === WebSocket.OPEN ||
+                audWs.readyState === WebSocket.CONNECTING)) return;
   if (audWs) { audWs.close(); audWs = null; }
   audMount = mount;
   if (actx && actx.state === 'suspended') actx.resume();
-  if (!_wReady) _wReady = _initWorklet();
+  _initWorklet();   // idempotent — guarded by _wNode and _wStarted
 
   audWs = new WebSocket('ws://' + location.host + '/ws/audio');
   audWs.binaryType = 'arraybuffer';
@@ -225,16 +251,13 @@ function openAudioStream(mount) {
     if (S.audioOn && m) setTimeout(() => { if (S.audioOn) openAudioStream(m); }, 2000);
   };
   audWs.onmessage = ({ data }) => {
-    if (!actx) return;
+    if (!_wNode || !actx) return;
     if (actx.state === 'suspended') { actx.resume(); return; }
     if (actx.state !== 'running') return;
-    _wReady.then(() => {
-      if (!_wNode) return;
-      const s16 = new Int16Array(data);
-      const f32 = new Float32Array(s16.length);
-      for (let i = 0; i < s16.length; i++) f32[i] = s16[i] / 32768;
-      _wNode.port.postMessage(f32, [f32.buffer]);  // transfer — zero copy
-    });
+    const s16 = new Int16Array(data);
+    const f32 = new Float32Array(s16.length);
+    for (let i = 0; i < s16.length; i++) f32[i] = s16[i] / 32768;
+    _wNode.port.postMessage(f32, [f32.buffer]);
   };
 }
 
