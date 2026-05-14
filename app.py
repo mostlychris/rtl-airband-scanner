@@ -190,7 +190,7 @@ function openAudioStream(mount) {
     for (let i = 0; i < s16.length; i++) ch[i] = s16[i] / 32768;
     const src = actx.createBufferSource();
     src.buffer = buf; src.connect(audFilt || actx.destination);
-    if (nextAt < now + 0.3) nextAt = now + 0.3;
+    if (nextAt < now + 0.05) nextAt = now + 0.05;
     src.start(nextAt);
     nextAt += buf.duration;
   };
@@ -774,8 +774,17 @@ class RTLFMScanner:
                     # Emit audio for every chunk while squelch is open — including
                     # the hold window after signal drops — to avoid pulsing from
                     # threshold crossings within a single transmission.
+                    #
+                    # Append a 15 ms ramp-to-zero tail so buf.duration (≈115 ms)
+                    # exceeds the delivery interval (≈105 ms hardware + overhead).
+                    # When buf.duration > delivery_interval, nextAt runs AHEAD of
+                    # actx.currentTime instead of behind it, eliminating the
+                    # per-chunk 5 ms gap that created the 10 Hz audio tremolo.
                     if squelch_open:
-                        pcm = (audio * 32767).astype(np.int16).tobytes()
+                        n_tail = int(self.audio_rate * 0.015)
+                        tail   = np.linspace(float(audio[-1]) if len(audio) else 0.0,
+                                             0.0, n_tail, dtype=np.float32)
+                        pcm = (np.concatenate([audio, tail]) * 32767).astype(np.int16).tobytes()
                         self._emit_audio(pcm)
 
                     if not active:
