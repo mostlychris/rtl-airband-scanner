@@ -17,7 +17,7 @@ from scipy.signal import lfilter
 from pathlib import Path
 from datetime import datetime
 from collections import deque
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
 
 AUDIO_RATE = 24000   # PCM output rate for the librtlsdr path (hw_rate=1,008,000 / 42)
@@ -96,6 +96,19 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .obtn.skip{background:var(--card2);border:1px solid var(--border);color:var(--text);font-weight:400}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .blink{animation:pulse 1.4s ease-in-out infinite}
+.ch-acts{display:flex;gap:2px;margin-left:auto;flex-shrink:0}
+.ch-icon{background:none;border:none;cursor:pointer;padding:1px 5px;font-size:11px;color:var(--muted);border-radius:3px;line-height:1.6;opacity:0;transition:opacity .12s}
+.ch:hover .ch-icon{opacity:1}
+.ch-icon:hover{background:var(--card2);color:var(--text)}
+.ch-icon.del:hover{color:var(--red)}
+.ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 14px;flex-wrap:wrap}
+.ch-edit-in{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 6px;font-size:12px;font-family:var(--mono);min-width:0}
+.ch-edit-lbl{flex:1}
+.ch-edit-sq{width:68px}
+.ch-save{background:var(--green);border:none;border-radius:4px;color:#000;cursor:pointer;font-size:11px;font-weight:600;padding:2px 10px;white-space:nowrap}
+.ch-cancel{background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px;padding:2px 8px}
+.ch-add-btn{display:flex;align-items:center;gap:5px;padding:6px 14px;font-size:12px;color:var(--muted);cursor:pointer;border-top:1px solid var(--border);transition:color .15s}
+.ch-add-btn:hover{color:var(--blue)}
 .acontrols{background:var(--card);border-bottom:1px solid var(--border);padding:8px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
 .acontrols.hidden{display:none}
 .actl{display:flex;align-items:center;gap:6px;font-size:12px}
@@ -172,6 +185,11 @@ select.asel{background:var(--card2);border:1px solid var(--border);color:var(--t
 const S = { streams:{}, playing:null, audioOn:false, locked:null };
 let ws, wsRetry=0;
 let actItems = [];
+let _editFreq  = null;   // freq string currently open in edit mode, or null
+let _addingCh  = false;  // whether the add-channel form is shown
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
 
 // ── Audio (Web Audio API — AudioWorklet ring buffer) ───────────────────────────
 //
@@ -362,6 +380,7 @@ function onMsg(m) {
   if (m.type === 'state') {
     if (m.audio_rate) PCM_RATE = m.audio_rate;
     m.streams.forEach(s => {
+      s.channelSquelch = s.channelSquelch || {};
       S.streams[s.mount] = s;
       (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
     });
@@ -404,6 +423,13 @@ function onMsg(m) {
       }
       _sqActive = m.active;
     }
+  } else if (m.type === 'channels_update') {
+    const s = S.streams[m.mount]; if (!s) return;
+    s.channels       = m.channels;
+    s.channelSquelch = m.channelSquelch;
+    s.defaultSquelch = m.defaultSquelch;
+    _editFreq = null; _addingCh = false;
+    updateCard(m.mount);
   } else if (m.type === 'conn') {
     const s = S.streams[m.mount]; if (!s) return;
     s.connected = m.connected;
@@ -419,7 +445,7 @@ function renderAll() {
     const d = document.createElement('div');
     d.className = cardClass(s);
     d.id = 'sc' + eid(s.mount);
-    d.onclick = () => lockTo(s.mount);
+    d.onclick = e => { if (!e.target.closest('.chlist')) lockTo(s.mount); };
     d.innerHTML = cardHtml(s);
     g.appendChild(d);
   });
@@ -448,18 +474,35 @@ function cardHtml(s) {
     ? '<div class="serr">⚠ ' + s.lastError + '</div>' : '';
 
   const chs   = s.channels || {};
+  const csq   = s.channelSquelch || {};
+  const defSq = (s.defaultSquelch || 0.032).toFixed(3);
   const freqs = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
   let rows = '';
   if (freqs.length) {
     freqs.forEach(f => {
-      const lbl = chs[f] || ''; const act = f === s.activeFreq;
+      const lbl  = chs[f] || '';
+      const act  = f === s.activeFreq;
+      const sq   = f in csq ? csq[f].toFixed(3) : defSq;
       const since = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
-      rows += '<div class="ch' + (act?' active':'') + '">'
-        + '<span class="ch-dot">' + (act?'◉':'○') + '</span>'
-        + '<span class="ch-f">' + f + '</span>'
-        + '<span class="ch-l">' + (lbl!==f?lbl:'') + '</span>'
-        + '<span class="ch-t">' + since + '</span>'
-        + '</div>';
+      if (f === _editFreq) {
+        rows += '<div class="ch-edit-row" onclick="event.stopPropagation()">'
+          + '<span class="ch-f" style="font-size:11px;color:var(--muted);flex-shrink:0">' + f + '</span>'
+          + '<input class="ch-edit-in ch-edit-lbl" id="ch-edit-label" value="' + escHtml(lbl !== f ? lbl : '') + '" placeholder="Label">'
+          + '<input class="ch-edit-in ch-edit-sq" id="ch-edit-sq" type="number" value="' + sq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
+          + '<button class="ch-save" onclick="saveChannel(\'' + f + '\')">Save</button>'
+          + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
+          + '</div>';
+      } else {
+        rows += '<div class="ch' + (act?' active':'') + '">'
+          + '<span class="ch-dot">' + (act?'◉':'○') + '</span>'
+          + '<span class="ch-f">' + f + '</span>'
+          + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
+          + '<span class="ch-t">' + since + '</span>'
+          + '<div class="ch-acts">'
+          + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')" title="Edit">✏</button>'
+          + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')" title="Remove">✕</button>'
+          + '</div></div>';
+      }
     });
   } else if (s.activeFreq) {
     rows = '<div class="ch active">'
@@ -471,10 +514,24 @@ function cardHtml(s) {
   } else {
     rows = '<div class="noch">Scanning…</div>';
   }
+
+  let addArea = '';
+  if (_addingCh) {
+    addArea = '<div class="ch-edit-row" onclick="event.stopPropagation()">'
+      + '<input class="ch-edit-in" id="ch-add-freq" placeholder="MHz" style="width:62px">'
+      + '<input class="ch-edit-in ch-edit-lbl" id="ch-add-label" placeholder="Label">'
+      + '<input class="ch-edit-in ch-edit-sq" id="ch-add-sq" type="number" value="' + defSq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
+      + '<button class="ch-save" onclick="addChannel()">Add</button>'
+      + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
+      + '</div>';
+  } else {
+    addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add frequency</div>';
+  }
+
   const hintTxt = S.locked===s.mount ? 'Click to unlock' : 'Click to lock audio here';
   return '<div class="shdr"><span class="sname">' + s.name + spk + lockBadge + '</span>'
     + connHtml + '</div>' + errHtml
-    + '<div class="chlist">' + rows + '</div>'
+    + '<div class="chlist">' + rows + addArea + '</div>'
     + '<div class="sqbar"><div class="sqfill" id="sqfill_' + eid(s.mount) + '"></div></div>'
     + '<div class="hint">' + hintTxt + '</div>';
 }
@@ -540,6 +597,46 @@ function updateAudioUI() {
     document.getElementById('albl').textContent  = 'Enable Audio';
     src.textContent = '';
   }
+}
+
+// ── Channel management ─────────────────────────────────────────────────────────
+function editChannel(freq) {
+  _editFreq = freq; _addingCh = false;
+  Object.keys(S.streams).forEach(m => updateCard(m));
+}
+function cancelEdit() {
+  _editFreq = null; _addingCh = false;
+  Object.keys(S.streams).forEach(m => updateCard(m));
+}
+function saveChannel(freq) {
+  const label = (document.getElementById('ch-edit-label').value || '').trim();
+  const sq    = parseFloat(document.getElementById('ch-edit-sq').value);
+  fetch('/api/channel', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq }),
+  }).catch(e => console.error('[api]', e));
+}
+function deleteChannel(freq) {
+  if (!confirm('Remove ' + freq + ' MHz from scanner?')) return;
+  fetch('/api/channel/' + encodeURIComponent(freq), { method: 'DELETE' })
+    .catch(e => console.error('[api]', e));
+}
+function showAddChannel() {
+  _editFreq = null; _addingCh = true;
+  Object.keys(S.streams).forEach(m => updateCard(m));
+  setTimeout(() => { const el = document.getElementById('ch-add-freq'); if (el) el.focus(); }, 50);
+}
+function addChannel() {
+  const freq  = (document.getElementById('ch-add-freq').value  || '').trim();
+  const label = (document.getElementById('ch-add-label').value || '').trim();
+  const sq    = parseFloat(document.getElementById('ch-add-sq').value);
+  if (!freq) return;
+  fetch('/api/channel', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq }),
+  }).catch(e => console.error('[api]', e));
 }
 
 // ── Audio filter / volume controls ────────────────────────────────────────────
@@ -821,6 +918,23 @@ class RTLFMScanner:
     def stop(self):
         self._running = False
 
+    def set_channel(self, freq: str, label: str,
+                    squelch_rms: float | None = None) -> None:
+        with self._lock:
+            self.channels[freq] = label
+            if squelch_rms is not None:
+                self.channel_squelch[freq] = squelch_rms
+            elif freq in self.channel_squelch:
+                del self.channel_squelch[freq]
+
+    def remove_channel(self, freq: str) -> None:
+        with self._lock:
+            self.channels.pop(freq, None)
+            self.channel_squelch.pop(freq, None)
+            if self._active_freq == freq:
+                self._active_freq  = None
+                self._active_since = None
+
     def _emit(self, evt: dict):
         if self._on_event: self._on_event(evt)
 
@@ -955,10 +1069,21 @@ class RTLFMScanner:
             scan_idx = 0
 
             while self._running:
+                # Rebuild the channel list each iteration so additions/removals
+                # made through the UI take effect without restarting the scanner.
+                with self._lock:
+                    freq_keys = list(self.channels.keys())
+                n_freqs = len(freq_keys)
+                if n_freqs == 0:
+                    time.sleep(0.1)
+                    continue
+                scan_idx = scan_idx % n_freqs
+
                 freq_str  = freq_keys[scan_idx]
                 freq_hz   = int(float(freq_str) * 1_000_000)
-                label     = self.channels[freq_str]
-                threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
+                with self._lock:
+                    label     = self.channels.get(freq_str, freq_str)
+                    threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
 
                 if self.debug:
                     print(f"[scan] → {freq_str} MHz  ({label})")
@@ -1106,11 +1231,46 @@ class WsManager:
 
 
 # ── App state ──────────────────────────────────────────────────────────────────
-scanner: RTLFMScanner | None            = None
-wsman:   WsManager                      = WsManager()
-_evq:    asyncio.Queue | None           = None
-_evloop: asyncio.AbstractEventLoop | None = None
-_audio_clients: list[asyncio.Queue]    = []
+scanner:      RTLFMScanner | None           = None
+wsman:        WsManager                     = WsManager()
+_evq:         asyncio.Queue | None          = None
+_evloop:      asyncio.AbstractEventLoop | None = None
+_audio_clients: list[asyncio.Queue]         = []
+_config_path: Path | None                  = None
+
+
+def _save_config() -> None:
+    """Persist current scanner channel list back to scanner_config.json."""
+    if not _config_path:
+        return
+    try:
+        if _config_path.exists():
+            with open(_config_path) as f:
+                cfg = json.load(f)
+        else:
+            cfg = {}
+        with scanner._lock:
+            new_channels = {
+                freq: ({"label": lbl, "squelch_rms": scanner.channel_squelch[freq]}
+                       if freq in scanner.channel_squelch else {"label": lbl})
+                for freq, lbl in scanner.channels.items()
+            }
+        cfg["channels"] = new_channels
+        with open(_config_path, "w") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception as e:
+        print(f"[config] save failed: {e}")
+
+
+def _channels_event() -> dict:
+    with scanner._lock:
+        return {
+            "type":           "channels_update",
+            "mount":          "sdr",
+            "channels":       dict(scanner.channels),
+            "channelSquelch": dict(scanner.channel_squelch),
+            "defaultSquelch": scanner.squelch_rms,
+        }
 
 
 def _emit(event: dict):
@@ -1137,19 +1297,24 @@ async def _bcast_loop():
 
 def _state() -> dict:
     s = scanner
+    with s._lock:
+        channels        = dict(s.channels)
+        channel_squelch = dict(s.channel_squelch)
     return {
         "type":       "state",
         "audio_rate": s.audio_rate,
         "streams": [{
-            "mount":      "sdr",
-            "name":       s.name,
-            "connected":  s.connected,
-            "activeFreq": s.active_freq,
-            "activeSince": s.active_since.isoformat() if s.active_since else None,
+            "mount":          "sdr",
+            "name":           s.name,
+            "connected":      s.connected,
+            "activeFreq":     s.active_freq,
+            "activeSince":    s.active_since.isoformat() if s.active_since else None,
             "history": [{"time": t.isoformat(), "freq": f, "label": lb}
                         for t, f, lb in s.history[:10]],
-            "channels":  s.channels,
-            "lastError": s.last_error,
+            "channels":       channels,
+            "channelSquelch": channel_squelch,
+            "defaultSquelch": s.squelch_rms,
+            "lastError":      s.last_error,
         }],
     }
 
@@ -1176,6 +1341,33 @@ async def _shutdown():
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return PAGE
+
+
+@app.put("/api/channel")
+async def api_put_channel(request: Request):
+    body = await request.json()
+    freq_raw = str(body.get("freq", "")).strip()
+    if not freq_raw:
+        return {"ok": False, "error": "freq required"}
+    try:
+        freq = f"{float(freq_raw):.3f}"
+    except ValueError:
+        return {"ok": False, "error": "invalid frequency"}
+    label = str(body.get("label", freq)).strip() or freq
+    sq_raw = body.get("squelch_rms")
+    squelch_rms = float(sq_raw) if sq_raw is not None else None
+    scanner.set_channel(freq, label, squelch_rms)
+    _save_config()
+    _emit(_channels_event())
+    return {"ok": True, "freq": freq}
+
+
+@app.delete("/api/channel/{freq:path}")
+async def api_delete_channel(freq: str):
+    scanner.remove_channel(freq)
+    _save_config()
+    _emit(_channels_event())
+    return {"ok": True}
 
 
 @app.get("/debug")
@@ -1235,7 +1427,7 @@ DEFAULT_CONFIG = Path(__file__).parent / "scanner_config.json"
 
 
 def main():
-    global scanner
+    global scanner, _config_path
 
     p = argparse.ArgumentParser(description="RTL-Airband Scanner")
     p.add_argument("--config",      default=str(DEFAULT_CONFIG))
@@ -1245,7 +1437,8 @@ def main():
     args = p.parse_args()
 
     cfg: dict = {}
-    config_path = Path(args.config)
+    config_path  = Path(args.config)
+    _config_path = config_path
     if config_path.exists():
         with open(config_path) as f:
             cfg = json.load(f)
