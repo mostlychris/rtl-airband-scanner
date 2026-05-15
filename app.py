@@ -65,7 +65,7 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .sconn.ok{color:var(--green)}.sconn.err{color:var(--red)}.sconn.warn{color:var(--yellow)}
 .serr{font-size:11px;color:var(--red);padding:6px 14px;background:rgba(248,81,73,.08);border-bottom:1px solid rgba(248,81,73,.2)}
 .chlist{padding:4px 0}
-.ch{display:flex;align-items:center;gap:10px;padding:6px 14px;transition:background .15s}
+.ch{position:relative;display:flex;align-items:center;gap:10px;padding:5px 14px;transition:background .15s}
 .ch.active{background:var(--gdim);border-left:3px solid var(--green);padding-left:11px}
 .ch-dot{font-size:10px;color:var(--muted);width:12px;flex-shrink:0}
 .ch.active .ch-dot{color:var(--green)}
@@ -96,11 +96,14 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .obtn.skip{background:var(--card2);border:1px solid var(--border);color:var(--text);font-weight:400}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
 .blink{animation:pulse 1.4s ease-in-out infinite}
-.ch-acts{display:flex;gap:2px;margin-left:auto;flex-shrink:0}
-.ch-icon{background:none;border:none;cursor:pointer;padding:1px 5px;font-size:11px;color:var(--muted);border-radius:3px;line-height:1.6;opacity:0;transition:opacity .12s}
-.ch:hover .ch-icon{opacity:1}
+.ch-acts{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;gap:2px;opacity:0;transition:opacity .12s}
+.ch:hover .ch-acts,.ch.skipped .ch-acts{opacity:1}
+.ch-icon{background:none;border:none;cursor:pointer;padding:1px 4px;font-size:11px;color:var(--muted);border-radius:3px;line-height:1}
 .ch-icon:hover{background:var(--card2);color:var(--text)}
 .ch-icon.del:hover{color:var(--red)}
+.ch-icon.skip:hover{color:var(--blue)}
+.ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:0.35}
+.ch.skipped .ch-icon.skip{color:var(--green)}
 .ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 14px;flex-wrap:wrap}
 .ch-edit-in{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 6px;font-size:12px;font-family:var(--mono);min-width:0}
 .ch-edit-lbl{flex:1}
@@ -381,6 +384,7 @@ function onMsg(m) {
     if (m.audio_rate) PCM_RATE = m.audio_rate;
     m.streams.forEach(s => {
       s.channelSquelch = s.channelSquelch || {};
+      s.skipped        = s.skipped || [];
       S.streams[s.mount] = s;
       (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
     });
@@ -428,6 +432,7 @@ function onMsg(m) {
     s.channels       = m.channels;
     s.channelSquelch = m.channelSquelch;
     s.defaultSquelch = m.defaultSquelch;
+    s.skipped        = m.skipped || [];
     _editFreq = null; _addingCh = false;
     updateCard(m.mount);
   } else if (m.type === 'conn') {
@@ -473,16 +478,18 @@ function cardHtml(s) {
   const errHtml = s.lastError
     ? '<div class="serr">⚠ ' + s.lastError + '</div>' : '';
 
-  const chs   = s.channels || {};
-  const csq   = s.channelSquelch || {};
-  const defSq = (s.defaultSquelch || 0.032).toFixed(3);
-  const freqs = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
+  const chs     = s.channels || {};
+  const csq     = s.channelSquelch || {};
+  const skpSet  = new Set(s.skipped || []);
+  const defSq   = (s.defaultSquelch || 0.032).toFixed(3);
+  const freqs   = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
   let rows = '';
   if (freqs.length) {
     freqs.forEach(f => {
-      const lbl  = chs[f] || '';
-      const act  = f === s.activeFreq;
-      const sq   = f in csq ? csq[f].toFixed(3) : defSq;
+      const lbl   = chs[f] || '';
+      const act   = f === s.activeFreq;
+      const skp   = skpSet.has(f);
+      const sq    = f in csq ? csq[f].toFixed(3) : defSq;
       const since = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
       if (f === _editFreq) {
         rows += '<div class="ch-edit-row" onclick="event.stopPropagation()">'
@@ -493,12 +500,13 @@ function cardHtml(s) {
           + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
           + '</div>';
       } else {
-        rows += '<div class="ch' + (act?' active':'') + '">'
-          + '<span class="ch-dot">' + (act?'◉':'○') + '</span>'
+        rows += '<div class="ch' + (act?' active':'') + (skp?' skipped':'') + '">'
+          + '<span class="ch-dot">' + (skp ? '—' : act ? '◉' : '○') + '</span>'
           + '<span class="ch-f">' + f + '</span>'
           + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
           + '<span class="ch-t">' + since + '</span>'
           + '<div class="ch-acts">'
+          + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
           + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')" title="Edit">✏</button>'
           + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')" title="Remove">✕</button>'
           + '</div></div>';
@@ -621,6 +629,13 @@ function deleteChannel(freq) {
   if (!confirm('Remove ' + freq + ' MHz from scanner?')) return;
   fetch('/api/channel/' + encodeURIComponent(freq), { method: 'DELETE' })
     .catch(e => console.error('[api]', e));
+}
+function skipChannel(freq) {
+  fetch('/api/skip', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ freq }),
+  }).catch(e => console.error('[api]', e));
 }
 function showAddChannel() {
   _editFreq = null; _addingCh = true;
@@ -867,6 +882,7 @@ class RTLFMScanner:
                  squelch: int = 70, squelch_rms: float = 0.003,
                  squelch_hold: float = 2.0,
                  channel_squelch: dict[str, float] | None = None,
+                 skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
                  samp_rate: int = 250000, scan_dwell: float = 0.5,
@@ -879,6 +895,7 @@ class RTLFMScanner:
         self.squelch_rms     = squelch_rms    # default Python-side threshold (0.0–1.0)
         self.squelch_hold    = squelch_hold   # seconds before clearing inactive freq
         self.channel_squelch = channel_squelch or {}  # per-freq overrides
+        self.skipped         = skipped or set()       # freqs excluded from scan rotation
         self.debug           = debug
         self.ppm          = ppm
         self.modulation   = modulation
@@ -931,9 +948,23 @@ class RTLFMScanner:
         with self._lock:
             self.channels.pop(freq, None)
             self.channel_squelch.pop(freq, None)
+            self.skipped.discard(freq)
             if self._active_freq == freq:
                 self._active_freq  = None
                 self._active_since = None
+
+    def toggle_skip(self, freq: str) -> bool:
+        """Toggle freq in/out of the scan rotation. Returns True if now skipped."""
+        with self._lock:
+            if freq in self.skipped:
+                self.skipped.discard(freq)
+                return False
+            else:
+                self.skipped.add(freq)
+                if self._active_freq == freq:
+                    self._active_freq  = None
+                    self._active_since = None
+                return True
 
     def _emit(self, evt: dict):
         if self._on_event: self._on_event(evt)
@@ -1069,10 +1100,10 @@ class RTLFMScanner:
             scan_idx = 0
 
             while self._running:
-                # Rebuild the channel list each iteration so additions/removals
+                # Rebuild the channel list each iteration so additions/removals/skips
                 # made through the UI take effect without restarting the scanner.
                 with self._lock:
-                    freq_keys = list(self.channels.keys())
+                    freq_keys = [f for f in self.channels if f not in self.skipped]
                 n_freqs = len(freq_keys)
                 if n_freqs == 0:
                     time.sleep(0.1)
@@ -1099,6 +1130,10 @@ class RTLFMScanner:
                 _last_dbg_state = None
 
                 while self._running:
+                    # Exit inner loop immediately if this freq was skipped mid-dwell.
+                    with self._lock:
+                        if freq_str in self.skipped:
+                            break
                     try:
                         raw = iq_q.get(timeout=5.0)
                     except _q.Empty:
@@ -1256,6 +1291,8 @@ def _save_config() -> None:
                 for freq, lbl in scanner.channels.items()
             }
         cfg["channels"] = new_channels
+        with scanner._lock:
+            cfg["skipped"] = sorted(scanner.skipped)
         with open(_config_path, "w") as f:
             json.dump(cfg, f, indent=2)
     except Exception as e:
@@ -1270,6 +1307,7 @@ def _channels_event() -> dict:
             "channels":       dict(scanner.channels),
             "channelSquelch": dict(scanner.channel_squelch),
             "defaultSquelch": scanner.squelch_rms,
+            "skipped":        sorted(scanner.skipped),
         }
 
 
@@ -1300,6 +1338,7 @@ def _state() -> dict:
     with s._lock:
         channels        = dict(s.channels)
         channel_squelch = dict(s.channel_squelch)
+        skipped         = sorted(s.skipped)
     return {
         "type":       "state",
         "audio_rate": s.audio_rate,
@@ -1314,6 +1353,7 @@ def _state() -> dict:
             "channels":       channels,
             "channelSquelch": channel_squelch,
             "defaultSquelch": s.squelch_rms,
+            "skipped":        skipped,
             "lastError":      s.last_error,
         }],
     }
@@ -1368,6 +1408,18 @@ async def api_delete_channel(freq: str):
     _save_config()
     _emit(_channels_event())
     return {"ok": True}
+
+
+@app.post("/api/skip")
+async def api_toggle_skip(request: Request):
+    body = await request.json()
+    freq = str(body.get("freq", "")).strip()
+    if not freq:
+        return {"ok": False, "error": "freq required"}
+    now_skipped = scanner.toggle_skip(freq)
+    _save_config()
+    _emit(_channels_event())
+    return {"ok": True, "skipped": now_skipped}
 
 
 @app.get("/debug")
@@ -1465,6 +1517,7 @@ def main():
         squelch_rms     = cfg.get("squelch_rms", 0.003),
         squelch_hold    = cfg.get("squelch_hold", 2.0),
         channel_squelch = channel_squelch,
+        skipped         = set(cfg.get("skipped", [])),
         ppm             = cfg.get("ppm", 0),
         modulation      = cfg.get("modulation", "fm"),
         device          = cfg.get("device", "0"),
