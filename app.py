@@ -65,8 +65,10 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .sconn.ok{color:var(--green)}.sconn.err{color:var(--red)}.sconn.warn{color:var(--yellow)}
 .serr{font-size:11px;color:var(--red);padding:6px 14px;background:rgba(248,81,73,.08);border-bottom:1px solid rgba(248,81,73,.2)}
 .chlist{padding:4px 0}
-.ch{position:relative;display:flex;align-items:center;gap:10px;padding:5px 14px;transition:background .15s}
+.ch{position:relative;display:flex;align-items:center;gap:10px;padding:5px 14px;transition:background .15s;cursor:default}
+.ch:hover{background:var(--card2)}
 .ch.active{background:var(--gdim);border-left:3px solid var(--green);padding-left:11px}
+.ch.active:hover{background:rgba(63,185,80,.18)}
 .ch-dot{font-size:10px;color:var(--muted);width:12px;flex-shrink:0}
 .ch.active .ch-dot{color:var(--green)}
 .ch-f{font-family:var(--mono);font-size:13px;font-weight:500;width:80px;flex-shrink:0}
