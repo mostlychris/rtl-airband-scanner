@@ -73,20 +73,31 @@ h1{font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;c
 .abtn.on{border-color:rgba(57,255,20,.5);color:var(--green);background:var(--gdim)}
 .asrc{font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
 
-/* ── Audio controls bar ───────────────────────────────────── */
-.acontrols{background:#090d09;border-bottom:1px solid #0d1a0d;padding:7px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
-.acontrols.hidden{display:none}
-.actl{display:flex;align-items:center;gap:6px;font-size:11px}
-.actl label{color:var(--muted);white-space:nowrap;user-select:none;letter-spacing:.1em;text-transform:uppercase;font-size:10px}
-input[type=range].aslider{width:80px;accent-color:var(--green);cursor:pointer;vertical-align:middle}
-select.asel{background:#0b100b;border:1px solid #1e301e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer}
-.atog{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);cursor:pointer;user-select:none;letter-spacing:.08em;text-transform:uppercase}
-.atog input[type=checkbox]{accent-color:var(--green);cursor:pointer}
-.avlbl{font-family:var(--mono);font-size:11px;color:var(--green);min-width:34px;text-align:right}
-
 /* ── Layout ───────────────────────────────────────────────── */
-main{max-width:1100px;margin:0 auto;padding:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:20px}
+.app-layout{display:flex;align-items:flex-start;max-width:1260px;margin:0 auto}
+main{flex:1;min-width:0;padding:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:20px}
+
+/* ── Audio controls sidebar ───────────────────────────────── */
+.acontrols{
+  width:152px;flex-shrink:0;
+  display:flex;flex-direction:column;gap:16px;
+  padding:16px 12px;
+  background:var(--card);border-left:1px solid var(--border);
+  position:sticky;top:43px;height:calc(100vh - 43px);overflow-y:auto;
+}
+.acontrols.hidden{display:none}
+.ac-title{
+  font-size:8px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);padding-bottom:10px;border-bottom:1px solid var(--panel-b);
+}
+.actl{display:flex;flex-direction:column;gap:5px}
+.actl label{color:var(--muted);user-select:none;letter-spacing:.1em;text-transform:uppercase;font-size:9px}
+input[type=range].aslider{width:100%;accent-color:var(--green);cursor:pointer}
+select.asel{width:100%;background:#0b100b;border:1px solid #1e301e;color:var(--text);border-radius:3px;padding:3px 6px;font-size:11px;cursor:pointer}
+.atog{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);cursor:pointer;user-select:none;letter-spacing:.08em;text-transform:uppercase}
+.atog input[type=checkbox]{accent-color:var(--green);cursor:pointer;flex-shrink:0}
+.avlbl{font-family:var(--mono);font-size:11px;color:var(--green)}
 
 /* ── Scanner card ─────────────────────────────────────────── */
 .scard{
@@ -115,26 +126,26 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 /* ── Frequency display (LCD panel) ───────────────────────── */
 .sc-display{
   background:var(--panel);
-  padding:14px 14px 10px;
+  padding:12px 14px 10px;
   border-bottom:1px solid var(--panel-b);
-  min-height:78px;
-  position:relative;
+  min-height:70px;
 }
-.sc-freq{
-  font-family:var(--mono);font-size:34px;font-weight:600;
-  letter-spacing:.03em;line-height:1;
-  color:var(--dim);
+.sc-lbl{
+  font-family:var(--mono);font-size:26px;font-weight:600;
+  letter-spacing:.04em;line-height:1;
+  color:var(--dim);text-transform:uppercase;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   transition:color .4s,text-shadow .4s;
 }
-.sc-display.active .sc-freq{color:var(--green);text-shadow:var(--glow)}
-.sc-unit{font-size:13px;font-weight:400;color:var(--muted);margin-left:5px;letter-spacing:.08em;vertical-align:middle}
-.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:7px}
-.sc-lbl{
-  font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
-  color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  transition:color .3s;
+.sc-display.active .sc-lbl{color:var(--green);text-shadow:var(--glow)}
+.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:6px}
+.sc-freq{
+  font-family:var(--mono);font-size:13px;font-weight:400;
+  letter-spacing:.06em;color:var(--muted);
+  transition:color .3s;flex:1;
 }
-.sc-display.active .sc-lbl{color:#7ab86a}
+.sc-display.active .sc-freq{color:#4a9a3a}
+.sc-unit{font-size:11px;color:var(--muted);margin-left:3px}
 .sc-timer{font-family:var(--mono);font-size:11px;color:var(--dim);transition:color .3s;flex-shrink:0}
 .sc-display.active .sc-timer{color:#3a6a2a}
 
@@ -180,7 +191,10 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 .sc-chl-hdr{
   padding:5px 12px;font-size:8px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
   color:var(--muted);border-bottom:1px solid var(--panel-b);background:var(--card2);
+  cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;
 }
+.sc-chl-hdr:hover{color:#7ab86a}
+.coll-arrow{font-size:8px;opacity:.6}
 .ch{position:relative;display:flex;align-items:center;gap:8px;padding:4px 12px;transition:background .15s;cursor:default}
 .ch:hover{background:var(--card2)}
 .ch.active{background:var(--gdim);border-left:2px solid var(--green);padding-left:10px}
@@ -212,7 +226,12 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 
 /* ── Activity log ─────────────────────────────────────────── */
 .acard{background:var(--card);border:1px solid var(--border);border-radius:4px;overflow:hidden}
-.ahdr{padding:7px 12px;border-bottom:1px solid var(--panel-b);font-size:8px;font-weight:700;color:var(--muted);letter-spacing:.2em;text-transform:uppercase;background:var(--card2)}
+.ahdr{
+  padding:7px 12px;border-bottom:1px solid var(--panel-b);font-size:8px;font-weight:700;
+  color:var(--muted);letter-spacing:.2em;text-transform:uppercase;background:var(--card2);
+  cursor:pointer;user-select:none;display:flex;align-items:center;justify-content:space-between;
+}
+.ahdr:hover{color:#7ab86a}
 .arow{display:flex;align-items:center;gap:12px;padding:5px 12px;border-bottom:1px solid var(--panel-b);font-size:11px}
 .arow:last-child{border-bottom:none}
 .at{font-family:var(--mono);color:var(--muted);width:58px;flex-shrink:0}
@@ -252,7 +271,18 @@ main{max-width:1100px;margin:0 auto;padding:20px}
     <span id="aico">◼</span><span id="albl">Audio Off</span>
   </button>
 </header>
+<div class="app-layout">
+<main>
+  <div class="grid" id="grid"></div>
+  <div class="acard">
+    <div class="ahdr" onclick="toggleActLog()">Activity Log <span id="actArrow">▼</span></div>
+    <div id="actlist">
+      <div class="arow"><span class="at" style="color:#1d2e1a">—</span><span style="color:#1d2e1a;font-size:11px;letter-spacing:.1em;text-transform:uppercase">No activity recorded</span></div>
+    </div>
+  </div>
+</main>
 <div class="acontrols hidden" id="acontrols">
+  <div class="ac-title">Audio Controls</div>
   <div class="actl">
     <label for="aVol">Volume</label>
     <input type="range" class="aslider" id="aVol" min="0" max="150" value="100" oninput="setVol(this.value)">
@@ -271,20 +301,14 @@ main{max-width:1100px;margin:0 auto;padding:20px}
     <input type="range" class="aslider" id="aLP" min="2000" max="8000" step="500" value="3000" oninput="setLP(this.value)">
     <span class="avlbl" id="aLPLbl">3.0 kHz</span>
   </div>
-  <label class="atog">
-    <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)">
-    SQ Tail Cut
-  </label>
-</div>
-<main>
-  <div class="grid" id="grid"></div>
-  <div class="acard">
-    <div class="ahdr">Activity Log</div>
-    <div id="actlist">
-      <div class="arow"><span class="at" style="color:#1d2e1a">—</span><span style="color:#1d2e1a;font-size:11px;letter-spacing:.1em;text-transform:uppercase">No activity recorded</span></div>
-    </div>
+  <div class="actl">
+    <label class="atog">
+      <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)">
+      SQ Tail Cut
+    </label>
   </div>
-</main>
+</div>
+</div>
 <div class="overlay hidden" id="overlay">
   <div class="obox">
     <h2>◼ Enable Audio</h2>
@@ -300,8 +324,10 @@ main{max-width:1100px;margin:0 auto;padding:20px}
 const S = { streams:{}, playing:null, audioOn:false, locked:null };
 let ws, wsRetry=0;
 let actItems = [];
-let _editFreq  = null;   // freq string currently open in edit mode, or null
-let _addingCh  = false;  // whether the add-channel form is shown
+let _editFreq    = null;   // freq string currently open in edit mode, or null
+let _addingCh    = false;  // whether the add-channel form is shown
+const _chCollapsed = {};   // { [mount]: bool } — per-stream channel bank collapse state
+let _actCollapsed  = false;
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -585,10 +611,11 @@ function cardHtml(s) {
   const skpSet = new Set(s.skipped || []);
   const defSq  = (s.defaultSquelch || 0.032).toFixed(3);
   const freqs  = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
-  const af     = s.activeFreq;
-  const albl   = af ? (chs[af] && chs[af] !== af ? chs[af] : 'RECEIVED') : '';
-  const since  = af && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
-  const isRx   = !!af;
+  const af      = s.activeFreq;
+  const rawLbl  = af ? (chs[af] && chs[af] !== af ? chs[af] : null) : null;
+  const primary = rawLbl || af || 'SCANNING';
+  const since   = af && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
+  const isRx    = !!af;
 
   // Panel header: stream name + status LED
   const rxBadge = (audMount===s.mount && S.audioOn)
@@ -602,7 +629,7 @@ function cardHtml(s) {
     ? '<div class="serr">⚠ ' + escHtml(s.lastError) + '</div>' : '';
 
   // Action buttons (always rendered; disabled when no active freq)
-  const noAf = !af;
+  const noAf  = !af;
   const afSkp = af && skpSet.has(af);
   const actsHtml = '<div class="sc-acts' + (noAf ? ' idle' : '') + '">'
     + '<button class="sc-btn skip' + (afSkp?' active':'') + '" onclick="event.stopPropagation();' + (af?'skipChannel(\''+af+'\')':'') + '" title="' + (afSkp?'Resume scan':'Skip channel') + '">'
@@ -665,15 +692,27 @@ function cardHtml(s) {
     addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add Frequency</div>';
   }
 
+  const metaHtml = (af || since)
+    ? '<div class="sc-meta">'
+      + (af && rawLbl ? '<span class="sc-freq">' + af + '<span class="sc-unit">MHz</span></span>' : '')
+      + (since ? '<span class="sc-timer">' + since + '</span>' : '')
+      + '</div>'
+    : '';
+
+  const collapsed = !!_chCollapsed[s.mount];
+  const chBankHtml = '<div class="sc-chl-hdr" onclick="event.stopPropagation();toggleChBank(' + JSON.stringify(s.mount) + ')">'
+    + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
+    + (collapsed ? '' : rows + addArea);
+
   return '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + '</span>' + connStatus + '</div>'
     + errHtml
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
-    + '<div class="sc-freq">' + (af || '———') + '<span class="sc-unit">MHz</span></div>'
-    + '<div class="sc-meta"><span class="sc-lbl">' + escHtml(albl) + '</span><span class="sc-timer">' + since + '</span></div>'
+    + '<div class="sc-lbl">' + escHtml(primary) + '</div>'
+    + metaHtml
     + '</div>'
     + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span></div>'
     + actsHtml
-    + '<div class="chlist"><div class="sc-chl-hdr">Channel Bank</div>' + rows + addArea + '</div>';
+    + '<div class="chlist">' + chBankHtml + '</div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
 
@@ -737,6 +776,18 @@ function updateAudioUI() {
     document.getElementById('albl').textContent  = 'Audio Off';
     src.textContent = '';
   }
+}
+
+// ── Collapse toggles ───────────────────────────────────────────────────────────
+function toggleChBank(mount) {
+  _chCollapsed[mount] = !_chCollapsed[mount];
+  updateCard(mount);
+}
+function toggleActLog() {
+  _actCollapsed = !_actCollapsed;
+  document.getElementById('actlist').style.display = _actCollapsed ? 'none' : '';
+  const arrow = document.getElementById('actArrow');
+  if (arrow) arrow.textContent = _actCollapsed ? '▶' : '▼';
 }
 
 // ── Channel management ─────────────────────────────────────────────────────────
