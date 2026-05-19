@@ -275,8 +275,8 @@ select.asel{width:100%;background:#0b100b;border:1px solid #1e301e;color:var(--t
 <main>
   <div class="grid" id="grid"></div>
   <div class="acard">
-    <div class="ahdr" onclick="toggleActLog()">Activity Log <span id="actArrow">▼</span></div>
-    <div id="actlist">
+    <div class="ahdr" onclick="toggleActLog()">Activity Log <span id="actArrow">▶</span></div>
+    <div id="actlist" style="display:none">
       <div class="arow"><span class="at" style="color:#1d2e1a">—</span><span style="color:#1d2e1a;font-size:11px;letter-spacing:.1em;text-transform:uppercase">No activity recorded</span></div>
     </div>
   </div>
@@ -327,7 +327,7 @@ let actItems = [];
 let _editFreq    = null;   // freq string currently open in edit mode, or null
 let _addingCh    = false;  // whether the add-channel form is shown
 const _chCollapsed = {};   // { [mount]: bool } — per-stream channel bank collapse state
-let _actCollapsed  = false;
+let _actCollapsed  = true;
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -699,7 +699,7 @@ function cardHtml(s) {
       + '</div>'
     : '';
 
-  const collapsed = !!_chCollapsed[s.mount];
+  const collapsed = _chCollapsed[s.mount] !== false;
   const chBankHtml = '<div class="sc-chl-hdr" onclick="event.stopPropagation();toggleChBank(' + escHtml(JSON.stringify(s.mount)) + ')">'
     + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
     + (collapsed ? '' : rows + addArea);
