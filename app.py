@@ -700,7 +700,7 @@ function cardHtml(s) {
     : '';
 
   const collapsed = !!_chCollapsed[s.mount];
-  const chBankHtml = '<div class="sc-chl-hdr" onclick="event.stopPropagation();toggleChBank(' + JSON.stringify(s.mount) + ')">'
+  const chBankHtml = '<div class="sc-chl-hdr" onclick="event.stopPropagation();toggleChBank(' + escHtml(JSON.stringify(s.mount)) + ')">'
     + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
     + (collapsed ? '' : rows + addArea);
 
