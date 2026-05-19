@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-RTL-Airband Scanner — pyrtlsdr direct mode.
+SDR Scanner — pyrtlsdr direct mode.
 
 Install:
     sudo apt install rtl-sdr python3-numpy
@@ -33,7 +33,7 @@ PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>RTL-Airband Scanner</title>
+<title>SDR Scanner</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -261,7 +261,7 @@ select.asel{width:100%;background:#0b100b;border:1px solid #1e301e;color:var(--t
       <circle cx="12" cy="12" r="2"/>
       <path d="M16.24 7.76a6 6 0 010 8.49M7.76 16.24a6 6 0 010-8.49M20.49 3.51a12 12 0 010 16.97M3.51 20.49a12 12 0 010-16.97"/>
     </svg>
-    RTL-Airband Scanner
+    SDR Scanner
   </h1>
   <div class="dot" id="wdot"></div>
   <span class="st" id="wst">Connecting…</span>
@@ -1664,7 +1664,7 @@ DEFAULT_CONFIG = Path(__file__).parent / "scanner_config.json"
 def main():
     global scanner, _config_path
 
-    p = argparse.ArgumentParser(description="RTL-Airband Scanner")
+    p = argparse.ArgumentParser(description="SDR Scanner")
     p.add_argument("--config",      default=str(DEFAULT_CONFIG))
     p.add_argument("--listen-port", type=int, default=8080)
     p.add_argument("--debug",       action="store_true",
