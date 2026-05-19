@@ -37,98 +37,208 @@ PAGE = r"""<!DOCTYPE html>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#0d1117;--card:#161b22;--card2:#21262d;--border:#30363d;
-  --text:#e6edf3;--muted:#7d8590;--green:#3fb950;--gdim:rgba(63,185,80,.12);
-  --gborder:rgba(63,185,80,.35);--blue:#58a6ff;--red:#f85149;--yellow:#d29922;
+  --bg:#060908;--card:#0b0f0c;--card2:#111710;--border:#182218;
+  --panel:#040604;--panel-b:#0a1409;
+  --text:#b8dba8;--muted:#3d5c35;--dim:#1d2e1a;
+  --green:#39ff14;--gdim:rgba(57,255,20,.07);--gborder:rgba(57,255,20,.28);
+  --blue:#00b4ff;--red:#ff3c3c;--yellow:#ffcc00;
   --mono:'SF Mono','Fira Code','Consolas',monospace;
+  --glow:0 0 6px var(--green),0 0 14px rgba(57,255,20,.35);
+  --glow-sm:0 0 4px rgba(57,255,20,.5);
 }
-body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh}
-header{background:var(--card);border-bottom:1px solid var(--border);padding:12px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100}
-h1{font-size:15px;font-weight:600;letter-spacing:.02em;display:flex;align-items:center;gap:8px}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background .3s}
-.dot.ok{background:var(--green)}.dot.err{background:var(--red)}
-.st{font-size:12px;color:var(--muted)}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;min-height:100vh;
+  background-image:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.06) 2px,rgba(0,0,0,.06) 4px)}
+
+/* ── Header ───────────────────────────────────────────────── */
+header{
+  background:linear-gradient(180deg,#0f150f 0%,#090d09 100%);
+  border-bottom:2px solid #0d1a0d;
+  box-shadow:0 3px 10px rgba(0,0,0,.7),inset 0 1px 0 rgba(57,255,20,.04);
+  padding:10px 20px;display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:100
+}
+h1{font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:#5a8a4a;display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted);flex-shrink:0;transition:background .3s,box-shadow .3s}
+.dot.ok{background:var(--green);box-shadow:var(--glow)}
+.dot.err{background:var(--red);box-shadow:0 0 6px var(--red)}
+.st{font-size:10px;color:var(--muted);letter-spacing:.1em;text-transform:uppercase}
 .spacer{flex:1}
-.abtn{background:var(--card2);border:1px solid var(--border);border-radius:6px;color:var(--text);cursor:pointer;font-size:12px;padding:5px 12px;display:flex;align-items:center;gap:6px;transition:all .15s}
-.abtn:hover{border-color:var(--blue);color:var(--blue)}
-.abtn.on{border-color:var(--green);color:var(--green);background:var(--gdim)}
-.asrc{font-size:11px;color:var(--muted)}
+.abtn{
+  background:#0b100b;border:1px solid #1e301e;border-radius:3px;
+  color:#4a7a3a;cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;
+  padding:5px 14px;display:flex;align-items:center;gap:6px;transition:all .15s;
+  box-shadow:0 2px 0 #030503,inset 0 1px 0 rgba(255,255,255,.03)
+}
+.abtn:hover{border-color:var(--green);color:var(--green);box-shadow:0 0 8px rgba(57,255,20,.18),0 2px 0 #030503}
+.abtn:active{transform:translateY(1px);box-shadow:0 1px 0 #030503}
+.abtn.on{border-color:rgba(57,255,20,.5);color:var(--green);background:var(--gdim)}
+.asrc{font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+
+/* ── Audio controls bar ───────────────────────────────────── */
+.acontrols{background:#090d09;border-bottom:1px solid #0d1a0d;padding:7px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.acontrols.hidden{display:none}
+.actl{display:flex;align-items:center;gap:6px;font-size:11px}
+.actl label{color:var(--muted);white-space:nowrap;user-select:none;letter-spacing:.1em;text-transform:uppercase;font-size:10px}
+input[type=range].aslider{width:80px;accent-color:var(--green);cursor:pointer;vertical-align:middle}
+select.asel{background:#0b100b;border:1px solid #1e301e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer}
+.atog{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);cursor:pointer;user-select:none;letter-spacing:.08em;text-transform:uppercase}
+.atog input[type=checkbox]{accent-color:var(--green);cursor:pointer}
+.avlbl{font-family:var(--mono);font-size:11px;color:var(--green);min-width:34px;text-align:right}
+
+/* ── Layout ───────────────────────────────────────────────── */
 main{max-width:1100px;margin:0 auto;padding:20px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:20px}
-.scard{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden;cursor:pointer;transition:border-color .2s}
-.scard:hover{border-color:#484f58}
-.scard.playing{border-color:var(--green)}
-.scard.locked{border-color:var(--blue)}
-.shdr{padding:10px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.sname{font-weight:600;font-size:13px}
-.sconn{margin-left:auto;font-size:11px}
-.sconn.ok{color:var(--green)}.sconn.err{color:var(--red)}.sconn.warn{color:var(--yellow)}
-.serr{font-size:11px;color:var(--red);padding:6px 14px;background:rgba(248,81,73,.08);border-bottom:1px solid rgba(248,81,73,.2)}
-.chlist{padding:4px 0}
-.ch{position:relative;display:flex;align-items:center;gap:10px;padding:5px 14px;transition:background .15s;cursor:default}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:20px}
+
+/* ── Scanner card ─────────────────────────────────────────── */
+.scard{
+  background:var(--card);border:1px solid var(--border);border-radius:4px;
+  overflow:hidden;cursor:pointer;transition:border-color .2s,box-shadow .2s;
+  box-shadow:0 4px 16px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.02)
+}
+.scard:hover{border-color:#243624}
+.scard.playing{border-color:rgba(57,255,20,.45);box-shadow:0 0 18px rgba(57,255,20,.1),0 4px 16px rgba(0,0,0,.6)}
+.scard.locked{border-color:rgba(0,180,255,.45);box-shadow:0 0 18px rgba(0,180,255,.1),0 4px 16px rgba(0,0,0,.6)}
+
+/* ── Panel header (stream name + status) ─────────────────── */
+.sc-panel-hdr{
+  display:flex;align-items:center;gap:8px;padding:7px 12px 6px;
+  background:linear-gradient(180deg,#0e140e 0%,#090d09 100%);
+  border-bottom:1px solid #0a1409;
+}
+.sc-name{font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#4a7a3a;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-status{display:flex;align-items:center;gap:5px;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex-shrink:0}
+.sc-led{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.sc-status.ok{color:var(--green)}.sc-status.ok .sc-led{background:var(--green);box-shadow:var(--glow-sm)}
+.sc-status.err{color:var(--red)}.sc-status.err .sc-led{background:var(--red);box-shadow:0 0 5px var(--red)}
+.sc-status.warn{color:var(--yellow)}.sc-status.warn .sc-led{background:var(--yellow)}
+.serr{font-size:10px;color:var(--red);padding:5px 12px;background:rgba(255,60,60,.07);border-bottom:1px solid rgba(255,60,60,.15);letter-spacing:.06em}
+
+/* ── Frequency display (LCD panel) ───────────────────────── */
+.sc-display{
+  background:var(--panel);
+  padding:14px 14px 10px;
+  border-bottom:1px solid var(--panel-b);
+  min-height:78px;
+  position:relative;
+}
+.sc-freq{
+  font-family:var(--mono);font-size:34px;font-weight:600;
+  letter-spacing:.03em;line-height:1;
+  color:var(--dim);
+  transition:color .4s,text-shadow .4s;
+}
+.sc-display.active .sc-freq{color:var(--green);text-shadow:var(--glow)}
+.sc-unit{font-size:13px;font-weight:400;color:var(--muted);margin-left:5px;letter-spacing:.08em;vertical-align:middle}
+.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:7px}
+.sc-lbl{
+  font-size:11px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+  color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  transition:color .3s;
+}
+.sc-display.active .sc-lbl{color:#7ab86a}
+.sc-timer{font-family:var(--mono);font-size:11px;color:var(--dim);transition:color .3s;flex-shrink:0}
+.sc-display.active .sc-timer{color:#3a6a2a}
+
+/* ── Signal meter (segmented LED bar) ─────────────────────── */
+.sqbar{
+  height:8px;background:var(--panel);padding:0 14px;margin-bottom:0;
+  display:flex;align-items:center;border-bottom:1px solid var(--panel-b);
+}
+.sqfill-wrap{flex:1;height:4px;background:var(--dim);border-radius:2px;overflow:hidden;position:relative}
+.sqfill{
+  height:100%;width:0%;
+  background:linear-gradient(90deg,#14a80a 0%,#39ff14 55%,#ccff00 75%,#ffcc00 88%,#ff5000 100%);
+  transition:width .12s linear;
+  position:relative;
+}
+.sqfill::after{
+  content:'';position:absolute;inset:0;
+  background-image:repeating-linear-gradient(90deg,transparent 0,transparent 5px,var(--panel) 5px,var(--panel) 7px);
+}
+.sqfill.active{box-shadow:0 0 4px rgba(57,255,20,.6)}
+.sq-label{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-left:8px;flex-shrink:0}
+
+/* ── Action buttons (SKIP / EDIT / DEL) ─────────────────── */
+.sc-acts{
+  display:flex;gap:5px;padding:8px 10px;
+  background:var(--card2);border-bottom:1px solid var(--border);
+}
+.sc-btn{
+  flex:1;background:#0b100b;border:1px solid #1e301e;border-radius:3px;
+  color:#3a5a2a;cursor:pointer;font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  padding:5px 2px;text-align:center;
+  transition:all .1s;
+  box-shadow:0 2px 0 #030503,inset 0 1px 0 rgba(255,255,255,.02);
+}
+.sc-btn:hover{border-color:rgba(57,255,20,.4);color:#8aba78;box-shadow:0 0 6px rgba(57,255,20,.12),0 2px 0 #030503}
+.sc-btn:active{transform:translateY(1px);box-shadow:0 1px 0 #030503}
+.sc-btn.active{border-color:rgba(0,180,255,.4);color:var(--blue);background:rgba(0,180,255,.05)}
+.sc-btn.del:hover{border-color:rgba(255,60,60,.4);color:var(--red);box-shadow:0 0 6px rgba(255,60,60,.12),0 2px 0 #030503}
+.sc-btn:disabled,.sc-acts.idle .sc-btn{opacity:.22;pointer-events:none}
+
+/* ── Channel bank list ─────────────────────────────────────── */
+.chlist{padding:3px 0}
+.sc-chl-hdr{
+  padding:5px 12px;font-size:8px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--muted);border-bottom:1px solid var(--panel-b);background:var(--card2);
+}
+.ch{position:relative;display:flex;align-items:center;gap:8px;padding:4px 12px;transition:background .15s;cursor:default}
 .ch:hover{background:var(--card2)}
-.ch.active{background:var(--gdim);border-left:3px solid var(--green);padding-left:11px}
-.ch.active:hover{background:rgba(63,185,80,.18)}
-.ch-dot{font-size:10px;color:var(--muted);width:12px;flex-shrink:0}
-.ch.active .ch-dot{color:var(--green)}
-.ch-f{font-family:var(--mono);font-size:13px;font-weight:500;width:80px;flex-shrink:0}
-.ch.active .ch-f{color:var(--green)}
-.ch-l{color:var(--muted);font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.ch.active .ch-l{color:var(--text)}
-.ch-t{font-size:11px;color:var(--muted);font-family:var(--mono);flex-shrink:0}
-.noch{padding:14px;color:var(--muted);font-size:12px;text-align:center}
-.hint{padding:8px 14px;font-size:11px;color:var(--muted);border-top:1px solid var(--border)}
-.sqbar{height:4px;background:var(--card2);border-radius:2px;margin:0 14px 10px;overflow:hidden}
-.sqfill{height:100%;background:var(--muted);border-radius:2px;transition:width .15s,background .15s;width:0%}
-.sqfill.active{background:var(--green)}
-.acard{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-.ahdr{padding:10px 14px;border-bottom:1px solid var(--border);font-size:11px;font-weight:600;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
-.arow{display:flex;align-items:center;gap:14px;padding:7px 14px;border-bottom:1px solid var(--border);font-size:12px}
-.arow:last-child{border-bottom:none}
-.at{font-family:var(--mono);color:var(--muted);width:58px;flex-shrink:0}
-.as{color:var(--muted);width:96px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.af{font-family:var(--mono);font-weight:600;width:82px;flex-shrink:0}
-.al{color:var(--muted);flex:1}
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;align-items:center;justify-content:center;z-index:200}
-.overlay.hidden{display:none}
-.obox{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:28px 36px;text-align:center;max-width:400px}
-.obox h2{font-size:17px;margin-bottom:8px}
-.obox p{color:var(--muted);font-size:13px;margin-bottom:22px;line-height:1.6}
-.obtn{background:var(--green);border:none;border-radius:6px;color:#000;cursor:pointer;font-size:13px;font-weight:600;padding:9px 24px;margin:4px}
-.obtn.skip{background:var(--card2);border:1px solid var(--border);color:var(--text);font-weight:400}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
-.blink{animation:pulse 1.4s ease-in-out infinite}
+.ch.active{background:var(--gdim);border-left:2px solid var(--green);padding-left:10px}
+.ch.active:hover{background:rgba(57,255,20,.1)}
+.ch-dot{font-size:9px;color:var(--dim);width:10px;flex-shrink:0;transition:color .2s}
+.ch.active .ch-dot{color:var(--green);text-shadow:var(--glow-sm)}
+.ch-f{font-family:var(--mono);font-size:12px;font-weight:600;width:74px;flex-shrink:0;color:#3a6a2a;transition:color .2s}
+.ch.active .ch-f{color:var(--green);text-shadow:0 0 5px rgba(57,255,20,.4)}
+.ch-l{color:var(--muted);font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.02em}
+.ch.active .ch-l{color:#7ab86a}
+.ch-t{font-size:10px;color:var(--dim);font-family:var(--mono);flex-shrink:0;transition:color .2s}
+.ch.active .ch-t{color:#3a6a2a}
+.noch{padding:12px;color:var(--dim);font-size:10px;text-align:center;letter-spacing:.15em;text-transform:uppercase}
 .ch-acts{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;gap:2px;opacity:0;transition:opacity .12s}
 .ch:hover .ch-acts,.ch.skipped .ch-acts{opacity:1}
-.ch-icon{background:none;border:none;cursor:pointer;padding:1px 4px;font-size:11px;color:var(--muted);border-radius:3px;line-height:1}
-.ch-icon:hover{background:var(--card2);color:var(--text)}
+.ch-icon{background:none;border:none;cursor:pointer;padding:1px 5px;font-size:10px;color:var(--muted);border-radius:2px;line-height:1}
+.ch-icon:hover{background:#111710;color:#7ab86a}
 .ch-icon.del:hover{color:var(--red)}
 .ch-icon.skip:hover{color:var(--blue)}
-.ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:0.35}
-.ch.skipped .ch-icon.skip{color:var(--green)}
-.ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 14px;flex-wrap:wrap}
-.ch-edit-in{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 6px;font-size:12px;font-family:var(--mono);min-width:0}
-.ch-edit-lbl{flex:1}
-.ch-edit-sq{width:68px}
-.ch-save{background:var(--green);border:none;border-radius:4px;color:#000;cursor:pointer;font-size:11px;font-weight:600;padding:2px 10px;white-space:nowrap}
-.ch-cancel{background:none;border:1px solid var(--border);border-radius:4px;color:var(--muted);cursor:pointer;font-size:11px;padding:2px 8px}
-.ch-add-btn{display:flex;align-items:center;gap:5px;padding:6px 14px;font-size:12px;color:var(--muted);cursor:pointer;border-top:1px solid var(--border);transition:color .15s}
-.ch-add-btn:hover{color:var(--blue)}
-.acontrols{background:var(--card);border-bottom:1px solid var(--border);padding:8px 20px;display:flex;align-items:center;gap:18px;flex-wrap:wrap}
-.acontrols.hidden{display:none}
-.actl{display:flex;align-items:center;gap:6px;font-size:12px}
-.actl label{color:var(--muted);white-space:nowrap;user-select:none}
-input[type=range].aslider{width:80px;accent-color:var(--green);cursor:pointer;vertical-align:middle}
-select.asel{background:var(--card2);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px 6px;font-size:12px;cursor:pointer}
-.atog{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--muted);cursor:pointer;user-select:none}
-.atog input[type=checkbox]{accent-color:var(--green);cursor:pointer}
-.avlbl{font-family:var(--mono);font-size:11px;color:var(--text);min-width:34px;text-align:right}
+.ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:.22}
+.ch.skipped .ch-icon.skip{color:var(--blue)}
+.ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 12px;flex-wrap:wrap}
+.ch-edit-in{background:#080d08;border:1px solid #1e301e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;font-family:var(--mono);min-width:0}
+.ch-edit-lbl{flex:1}.ch-edit-sq{width:64px}
+.ch-save{background:rgba(57,255,20,.1);border:1px solid rgba(57,255,20,.35);border-radius:3px;color:var(--green);cursor:pointer;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:2px 10px;white-space:nowrap}
+.ch-cancel{background:none;border:1px solid #1e301e;border-radius:3px;color:var(--muted);cursor:pointer;font-size:9px;letter-spacing:.06em;padding:2px 8px}
+.ch-add-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:10px;color:var(--muted);cursor:pointer;border-top:1px solid var(--panel-b);transition:color .15s;letter-spacing:.1em;text-transform:uppercase}
+.ch-add-btn:hover{color:var(--green)}
+
+/* ── Activity log ─────────────────────────────────────────── */
+.acard{background:var(--card);border:1px solid var(--border);border-radius:4px;overflow:hidden}
+.ahdr{padding:7px 12px;border-bottom:1px solid var(--panel-b);font-size:8px;font-weight:700;color:var(--muted);letter-spacing:.2em;text-transform:uppercase;background:var(--card2)}
+.arow{display:flex;align-items:center;gap:12px;padding:5px 12px;border-bottom:1px solid var(--panel-b);font-size:11px}
+.arow:last-child{border-bottom:none}
+.at{font-family:var(--mono);color:var(--muted);width:58px;flex-shrink:0}
+.as{color:var(--muted);width:90px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px;letter-spacing:.04em;text-transform:uppercase}
+.af{font-family:var(--mono);font-weight:600;width:82px;flex-shrink:0;color:#3a8a2a}
+.al{color:var(--muted);flex:1;font-size:11px}
+
+/* ── Overlay ──────────────────────────────────────────────── */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;z-index:200}
+.overlay.hidden{display:none}
+.obox{background:var(--card);border:1px solid #1e301e;border-radius:6px;padding:28px 36px;text-align:center;max-width:400px;box-shadow:0 0 40px rgba(57,255,20,.08)}
+.obox h2{font-size:14px;margin-bottom:8px;color:var(--green);letter-spacing:.15em;text-transform:uppercase;text-shadow:var(--glow-sm)}
+.obox p{color:var(--muted);font-size:12px;margin-bottom:22px;line-height:1.7}
+.obtn{background:rgba(57,255,20,.08);border:1px solid rgba(57,255,20,.35);border-radius:3px;color:var(--green);cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:9px 24px;margin:4px;transition:all .15s}
+.obtn:hover{background:rgba(57,255,20,.16);box-shadow:0 0 12px rgba(57,255,20,.2)}
+.obtn.skip{background:#0b100b;border:1px solid #1e301e;color:var(--muted);font-weight:400;letter-spacing:.06em}
+
+/* ── Animations ───────────────────────────────────────────── */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.blink{animation:pulse 1.2s ease-in-out infinite}
 </style>
 </head>
 <body>
 <header>
   <h1>
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#58a6ff" stroke-width="2">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#4a7a3a" stroke-width="2.5">
       <circle cx="12" cy="12" r="2"/>
       <path d="M16.24 7.76a6 6 0 010 8.49M7.76 16.24a6 6 0 010-8.49M20.49 3.51a12 12 0 010 16.97M3.51 20.49a12 12 0 010-16.97"/>
     </svg>
@@ -139,17 +249,17 @@ select.asel{background:var(--card2);border:1px solid var(--border);color:var(--t
   <div class="spacer"></div>
   <span class="asrc" id="asrc"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
-    <span id="aico">🔇</span><span id="albl">Enable Audio</span>
+    <span id="aico">◼</span><span id="albl">Audio Off</span>
   </button>
 </header>
 <div class="acontrols hidden" id="acontrols">
   <div class="actl">
-    <label for="aVol">Vol</label>
+    <label for="aVol">Volume</label>
     <input type="range" class="aslider" id="aVol" min="0" max="150" value="100" oninput="setVol(this.value)">
     <span class="avlbl" id="aVolLbl">100%</span>
   </div>
   <div class="actl">
-    <label for="aHP">HP</label>
+    <label for="aHP">HP Filter</label>
     <select class="asel" id="aHP" onchange="setHP(this.value)">
       <option value="0">Off</option>
       <option value="100">100 Hz</option>
@@ -157,31 +267,31 @@ select.asel{background:var(--card2);border:1px solid var(--border);color:var(--t
     </select>
   </div>
   <div class="actl">
-    <label for="aLP">LP</label>
+    <label for="aLP">LP Filter</label>
     <input type="range" class="aslider" id="aLP" min="2000" max="8000" step="500" value="3000" oninput="setLP(this.value)">
     <span class="avlbl" id="aLPLbl">3.0 kHz</span>
   </div>
   <label class="atog">
     <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)">
-    Squelch tail cut
+    SQ Tail Cut
   </label>
 </div>
 <main>
   <div class="grid" id="grid"></div>
   <div class="acard">
-    <div class="ahdr">Recent Activity</div>
+    <div class="ahdr">Activity Log</div>
     <div id="actlist">
-      <div class="arow"><span class="at" style="color:#484f58">—</span><span style="color:#484f58;font-size:12px">No activity yet</span></div>
+      <div class="arow"><span class="at" style="color:#1d2e1a">—</span><span style="color:#1d2e1a;font-size:11px;letter-spacing:.1em;text-transform:uppercase">No activity recorded</span></div>
     </div>
   </div>
 </main>
 <div class="overlay hidden" id="overlay">
   <div class="obox">
-    <h2>🔊 Enable Audio?</h2>
-    <p>Audio is demodulated on the Pi and streamed as PCM over WebSocket.<br>
+    <h2>◼ Enable Audio</h2>
+    <p>Audio is demodulated on the device and streamed as PCM over WebSocket.<br>
        Latency is typically under 1 second.<br>
-       Click a stream card to lock audio to that stream.</p>
-    <button class="obtn" onclick="enableAudio()">Enable Audio</button>
+       Click a stream panel to lock audio to that stream.</p>
+    <button class="obtn" onclick="enableAudio()">▶ Enable Audio</button>
     <button class="obtn skip" onclick="closeOverlay()">Display Only</button>
   </div>
 </div>
@@ -470,43 +580,60 @@ function cardClass(s) {
   return c;
 }
 function cardHtml(s) {
-  const connHtml = s.connected
-    ? '<span class="sconn ok">● scanning</span>'
-    : '<span class="sconn err">○ ' + (s.lastError ? 'error' : 'opening…') + '</span>';
-  const spk = (audMount===s.mount && S.audioOn)
-    ? ' <span class="blink" style="color:var(--green);font-size:10px">🔊</span>' : '';
-  const lockBadge = S.locked===s.mount
-    ? ' <span style="font-size:10px;color:var(--blue)">🔒 locked</span>' : '';
-  const errHtml = s.lastError
-    ? '<div class="serr">⚠ ' + s.lastError + '</div>' : '';
+  const chs    = s.channels || {};
+  const csq    = s.channelSquelch || {};
+  const skpSet = new Set(s.skipped || []);
+  const defSq  = (s.defaultSquelch || 0.032).toFixed(3);
+  const freqs  = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
+  const af     = s.activeFreq;
+  const albl   = af ? (chs[af] && chs[af] !== af ? chs[af] : 'RECEIVED') : '';
+  const since  = af && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
+  const isRx   = !!af;
 
-  const chs     = s.channels || {};
-  const csq     = s.channelSquelch || {};
-  const skpSet  = new Set(s.skipped || []);
-  const defSq   = (s.defaultSquelch || 0.032).toFixed(3);
-  const freqs   = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
+  // Panel header: stream name + status LED
+  const rxBadge = (audMount===s.mount && S.audioOn)
+    ? ' <span class="blink" style="color:var(--green);font-size:9px;letter-spacing:.1em">▶ RX</span>' : '';
+  const lockBadge = S.locked===s.mount
+    ? ' <span style="font-size:9px;color:var(--blue);letter-spacing:.1em">⬡ LOCK</span>' : '';
+  const connStatus = s.connected
+    ? '<span class="sc-status ok"><span class="sc-led"></span>SCANNING</span>'
+    : '<span class="sc-status ' + (s.lastError ? 'err' : 'warn') + '"><span class="sc-led"></span>' + (s.lastError ? 'ERROR' : 'OPENING') + '</span>';
+  const errHtml = s.lastError
+    ? '<div class="serr">⚠ ' + escHtml(s.lastError) + '</div>' : '';
+
+  // Action buttons (always rendered; disabled when no active freq)
+  const noAf = !af;
+  const afSkp = af && skpSet.has(af);
+  const actsHtml = '<div class="sc-acts' + (noAf ? ' idle' : '') + '">'
+    + '<button class="sc-btn skip' + (afSkp?' active':'') + '" onclick="event.stopPropagation();' + (af?'skipChannel(\''+af+'\')':'') + '" title="' + (afSkp?'Resume scan':'Skip channel') + '">'
+    + (afSkp ? '▶ SCAN' : '⊘ SKIP') + '</button>'
+    + '<button class="sc-btn" onclick="event.stopPropagation();' + (af?'editChannel(\''+af+'\')':'') + '" title="Edit label/squelch">✏ EDIT</button>'
+    + '<button class="sc-btn del" onclick="event.stopPropagation();' + (af?'deleteChannel(\''+af+'\')':'') + '" title="Remove channel">✕ DEL</button>'
+    + '</div>';
+
+  // Channel bank rows
   let rows = '';
   if (freqs.length) {
     freqs.forEach(f => {
-      const lbl   = chs[f] || '';
-      const act   = f === s.activeFreq;
-      const skp   = skpSet.has(f);
-      const sq    = f in csq ? csq[f].toFixed(3) : defSq;
-      const since = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
+      const lbl  = chs[f] || '';
+      const act  = f === af;
+      const skp  = skpSet.has(f);
+      const sq   = f in csq ? csq[f].toFixed(3) : defSq;
+      const t    = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
       if (f === _editFreq) {
         rows += '<div class="ch-edit-row" onclick="event.stopPropagation()">'
-          + '<span class="ch-f" style="font-size:11px;color:var(--muted);flex-shrink:0">' + f + '</span>'
+          + '<span class="ch-f" style="font-size:10px;color:var(--muted);flex-shrink:0">' + f + '</span>'
           + '<input class="ch-edit-in ch-edit-lbl" id="ch-edit-label" value="' + escHtml(lbl !== f ? lbl : '') + '" placeholder="Label">'
           + '<input class="ch-edit-in ch-edit-sq" id="ch-edit-sq" type="number" value="' + sq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
-          + '<button class="ch-save" onclick="saveChannel(\'' + f + '\')">Save</button>'
+          + '<button class="ch-save" onclick="saveChannel(\'' + f + '\')">SAVE</button>'
           + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
           + '</div>';
       } else {
         rows += '<div class="ch' + (act?' active':'') + (skp?' skipped':'') + '">'
-          + '<span class="ch-dot">' + (skp ? '—' : act ? '◉' : '○') + '</span>'
+          + '<span class="ch-dot">' + (skp ? '─' : act ? '◉' : '○') + '</span>'
           + '<span class="ch-f">' + f + '</span>'
           + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
-          + '<span class="ch-t">' + since + '</span>'
+          + '<span class="ch-t">' + t + '</span>'
           + '<div class="ch-acts">'
           + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
           + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')" title="Edit">✏</button>'
@@ -514,12 +641,12 @@ function cardHtml(s) {
           + '</div></div>';
       }
     });
-  } else if (s.activeFreq) {
+  } else if (af) {
     rows = '<div class="ch active">'
       + '<span class="ch-dot">◉</span>'
-      + '<span class="ch-f">' + s.activeFreq + '</span>'
-      + '<span class="ch-l" style="font-style:italic;color:var(--muted)">detected</span>'
-      + '<span class="ch-t">' + (s.activeSince?new Date(s.activeSince).toLocaleTimeString():'') + '</span>'
+      + '<span class="ch-f">' + af + '</span>'
+      + '<span class="ch-l" style="letter-spacing:.08em;text-transform:uppercase">Detected</span>'
+      + '<span class="ch-t">' + since + '</span>'
       + '</div>';
   } else {
     rows = '<div class="noch">Scanning…</div>';
@@ -528,22 +655,25 @@ function cardHtml(s) {
   let addArea = '';
   if (_addingCh) {
     addArea = '<div class="ch-edit-row" onclick="event.stopPropagation()">'
-      + '<input class="ch-edit-in" id="ch-add-freq" placeholder="MHz" style="width:62px">'
+      + '<input class="ch-edit-in" id="ch-add-freq" placeholder="MHz" style="width:60px">'
       + '<input class="ch-edit-in ch-edit-lbl" id="ch-add-label" placeholder="Label">'
       + '<input class="ch-edit-in ch-edit-sq" id="ch-add-sq" type="number" value="' + defSq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
-      + '<button class="ch-save" onclick="addChannel()">Add</button>'
+      + '<button class="ch-save" onclick="addChannel()">ADD</button>'
       + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
       + '</div>';
   } else {
-    addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add frequency</div>';
+    addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add Frequency</div>';
   }
 
-  const hintTxt = S.locked===s.mount ? 'Click to unlock' : 'Click to lock audio here';
-  return '<div class="shdr"><span class="sname">' + s.name + spk + lockBadge + '</span>'
-    + connHtml + '</div>' + errHtml
-    + '<div class="chlist">' + rows + addArea + '</div>'
-    + '<div class="sqbar"><div class="sqfill" id="sqfill_' + eid(s.mount) + '"></div></div>'
-    + '<div class="hint">' + hintTxt + '</div>';
+  return '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + '</span>' + connStatus + '</div>'
+    + errHtml
+    + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
+    + '<div class="sc-freq">' + (af || '———') + '<span class="sc-unit">MHz</span></div>'
+    + '<div class="sc-meta"><span class="sc-lbl">' + escHtml(albl) + '</span><span class="sc-timer">' + since + '</span></div>'
+    + '</div>'
+    + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span></div>'
+    + actsHtml
+    + '<div class="chlist"><div class="sc-chl-hdr">Channel Bank</div>' + rows + addArea + '</div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
 
@@ -598,13 +728,13 @@ function updateAudioUI() {
   if (S.audioOn && audMount) {
     const s = S.streams[audMount];
     btn.className = 'abtn on';
-    document.getElementById('aico').textContent = connected ? '🔊' : '⏳';
-    document.getElementById('albl').textContent  = S.locked ? 'Locked' : 'Auto';
-    src.textContent = s ? s.name : '';
+    document.getElementById('aico').textContent = connected ? '▶' : '…';
+    document.getElementById('albl').textContent  = S.locked ? 'Audio Lock' : 'Audio Auto';
+    src.textContent = s ? s.name.toUpperCase() : '';
   } else {
     btn.className = 'abtn';
-    document.getElementById('aico').textContent = '🔇';
-    document.getElementById('albl').textContent  = 'Enable Audio';
+    document.getElementById('aico').textContent = '◼';
+    document.getElementById('albl').textContent  = 'Audio Off';
     src.textContent = '';
   }
 }
