@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json, asyncio, threading, argparse, uvicorn
 import numpy as np
-from scipy.signal import lfilter
+from scipy.signal import lfilter, firwin
 from pathlib import Path
 from datetime import datetime
 from collections import deque
@@ -221,7 +221,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .ch.skipped .ch-icon.skip{color:var(--amber)}
 .ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 12px;flex-wrap:wrap}
 .ch-edit-in{background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;font-family:var(--mono);min-width:0}
-.ch-edit-lbl{flex:1}.ch-edit-sq{width:64px}
+.ch-edit-lbl{flex:1}.ch-edit-sq{width:64px}.ch-edit-gn{width:72px}
 .ch-save{background:rgba(45,255,110,.08);border:1px solid rgba(45,255,110,.3);border-radius:3px;color:var(--green);cursor:pointer;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:2px 10px;white-space:nowrap}
 .ch-cancel{background:none;border:1px solid #1e2a3e;border-radius:3px;color:var(--muted);cursor:pointer;font-size:9px;letter-spacing:.06em;padding:2px 8px}
 .ch-add-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:10px;color:var(--muted);cursor:pointer;border-top:1px solid #141e30;transition:color .15s;letter-spacing:.1em;text-transform:uppercase}
@@ -582,7 +582,8 @@ function onMsg(m) {
     if (m.audio_rate) PCM_RATE = m.audio_rate;
     m.streams.forEach(s => {
       s.channelSquelch = s.channelSquelch || {};
-      s.skipped        = s.skipped || [];
+      s.channelGain    = s.channelGain    || {};
+      s.skipped        = s.skipped        || [];
       S.streams[s.mount] = s;
       (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
     });
@@ -629,7 +630,9 @@ function onMsg(m) {
     const s = S.streams[m.mount]; if (!s) return;
     s.channels       = m.channels;
     s.channelSquelch = m.channelSquelch;
+    s.channelGain    = m.channelGain    || {};
     s.defaultSquelch = m.defaultSquelch;
+    s.defaultGain    = m.defaultGain;
     s.skipped        = m.skipped || [];
     _editFreq = null; _addingCh = false;
     updateCard(m.mount);
@@ -668,8 +671,10 @@ function cardClass(s) {
 function cardHtml(s) {
   const chs    = s.channels || {};
   const csq    = s.channelSquelch || {};
+  const cgain  = s.channelGain    || {};
   const skpSet = new Set(s.skipped || []);
   const defSq  = (s.defaultSquelch || 0.032).toFixed(3);
+  const defGn  = s.defaultGain || 'auto';
   const freqs  = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
   const af      = s.activeFreq;
   const rawLbl  = af ? (chs[af] && chs[af] !== af ? chs[af] : null) : null;
@@ -706,12 +711,14 @@ function cardHtml(s) {
       const act  = f === af;
       const skp  = skpSet.has(f);
       const sq   = f in csq ? csq[f].toFixed(3) : defSq;
+      const gn   = f in cgain ? cgain[f] : defGn;
       const t    = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
       if (f === _editFreq) {
         rows += '<div class="ch-edit-row" onclick="event.stopPropagation()">'
           + '<span class="ch-f" style="font-size:10px;color:var(--muted);flex-shrink:0">' + f + '</span>'
           + '<input class="ch-edit-in ch-edit-lbl" id="ch-edit-label" value="' + escHtml(lbl !== f ? lbl : '') + '" placeholder="Label">'
           + '<input class="ch-edit-in ch-edit-sq" id="ch-edit-sq" type="number" value="' + sq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
+          + '<input class="ch-edit-in ch-edit-gn" id="ch-edit-gain" value="' + escHtml(gn) + '" placeholder="Gain (auto or dB)" title="RF gain: auto, or tenths-of-dB (e.g. 25.4)">'
           + '<button class="ch-save" onclick="saveChannel(\'' + f + '\')">SAVE</button>'
           + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
           + '</div>';
@@ -745,6 +752,7 @@ function cardHtml(s) {
       + '<input class="ch-edit-in" id="ch-add-freq" placeholder="MHz" style="width:60px">'
       + '<input class="ch-edit-in ch-edit-lbl" id="ch-add-label" placeholder="Label">'
       + '<input class="ch-edit-in ch-edit-sq" id="ch-add-sq" type="number" value="' + defSq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
+      + '<input class="ch-edit-in ch-edit-gn" id="ch-add-gain" value="' + escHtml(defGn) + '" placeholder="Gain" title="RF gain: auto or dB">'
       + '<button class="ch-save" onclick="addChannel()">ADD</button>'
       + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
       + '</div>';
@@ -862,10 +870,11 @@ function cancelEdit() {
 function saveChannel(freq) {
   const label = (document.getElementById('ch-edit-label').value || '').trim();
   const sq    = parseFloat(document.getElementById('ch-edit-sq').value);
+  const gn    = (document.getElementById('ch-edit-gain').value || '').trim();
   fetch('/api/channel', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq }),
+    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn }),
   }).catch(e => console.error('[api]', e));
 }
 function deleteChannel(freq) {
@@ -889,11 +898,12 @@ function addChannel() {
   const freq  = (document.getElementById('ch-add-freq').value  || '').trim();
   const label = (document.getElementById('ch-add-label').value || '').trim();
   const sq    = parseFloat(document.getElementById('ch-add-sq').value);
+  const gn    = (document.getElementById('ch-add-gain').value  || '').trim();
   if (!freq) return;
   fetch('/api/channel', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq }),
+    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn }),
   }).catch(e => console.error('[api]', e));
 }
 
@@ -1125,6 +1135,7 @@ class RTLFMScanner:
                  squelch: int = 70, squelch_rms: float = 0.003,
                  squelch_hold: float = 2.0,
                  channel_squelch: dict[str, float] | None = None,
+                 channel_gain: dict[str, str] | None = None,
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
@@ -1137,7 +1148,8 @@ class RTLFMScanner:
         self.squelch         = squelch
         self.squelch_rms     = squelch_rms    # default Python-side threshold (0.0–1.0)
         self.squelch_hold    = squelch_hold   # seconds before clearing inactive freq
-        self.channel_squelch = channel_squelch or {}  # per-freq overrides
+        self.channel_squelch = channel_squelch or {}  # per-freq squelch overrides
+        self.channel_gain    = channel_gain    or {}  # per-freq gain overrides (e.g. "25.4" or "auto")
         self.skipped         = skipped or set()       # freqs excluded from scan rotation
         self.debug           = debug
         self.ppm          = ppm
@@ -1179,18 +1191,24 @@ class RTLFMScanner:
         self._running = False
 
     def set_channel(self, freq: str, label: str,
-                    squelch_rms: float | None = None) -> None:
+                    squelch_rms: float | None = None,
+                    gain: str | None = None) -> None:
         with self._lock:
             self.channels[freq] = label
             if squelch_rms is not None:
                 self.channel_squelch[freq] = squelch_rms
             elif freq in self.channel_squelch:
                 del self.channel_squelch[freq]
+            if gain is not None:
+                self.channel_gain[freq] = gain
+            elif freq in self.channel_gain:
+                del self.channel_gain[freq]
 
     def remove_channel(self, freq: str) -> None:
         with self._lock:
             self.channels.pop(freq, None)
             self.channel_squelch.pop(freq, None)
+            self.channel_gain.pop(freq, None)
             self.skipped.discard(freq)
             if self._active_freq == freq:
                 self._active_freq  = None
@@ -1241,6 +1259,10 @@ class RTLFMScanner:
         oversample = 1_000_000 // self.audio_rate + 1
         hw_rate    = self.audio_rate * oversample
         decimate   = oversample
+        # FIR anti-aliasing filter for decimation.  63-tap Blackman-Harris window
+        # gives ~90 dB stopband rejection (vs ~13 dB for the old boxcar average),
+        # preventing strong out-of-band signals from aliasing into the decoded channel.
+        fir_taps = firwin(63, 1.0 / decimate, window='blackmanharris')
         # Align to USB max-packet-size boundary: RTL-SDR never sends short packets,
         # so a non-multiple-of-512 transfer causes LIBUSB_ERROR_OVERFLOW (-8).
         # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
@@ -1358,11 +1380,13 @@ class RTLFMScanner:
                 with self._lock:
                     label     = self.channels.get(freq_str, freq_str)
                     threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
+                    eff_gain  = self.channel_gain.get(freq_str, self.gain)
 
                 if self.debug:
-                    print(f"[scan] → {freq_str} MHz  ({label})")
+                    print(f"[scan] → {freq_str} MHz  ({label})  gain={eff_gain}")
 
                 _stop_reader()
+                sdr.set_gain(eff_gain)
                 _start_reader(freq_hz)
 
                 dwell_start     = time.time()
@@ -1371,6 +1395,8 @@ class RTLFMScanner:
                 last_iq         = None   # per-frequency; valid across chunks with async continuity
                 deemph_z        = 0.0
                 _last_dbg_state = None
+                fir_zi_i = np.zeros(len(fir_taps) - 1)  # FIR state reset on each freq hop
+                fir_zi_q = np.zeros(len(fir_taps) - 1)
 
                 while self._running:
                     # Exit inner loop immediately if this freq was skipped mid-dwell.
@@ -1382,10 +1408,13 @@ class RTLFMScanner:
                     except _q.Empty:
                         raise RuntimeError("rtlsdr async read timed out — device stalled?")
 
-                    # Stage 1 — IQ decimate to audio_rate BEFORE FM discriminating.
-                    # Averaging decimate raw samples coherently reduces noise power ×decimate.
-                    n_iq  = len(raw) // decimate * decimate
-                    iq_if = raw[:n_iq].reshape(-1, decimate).mean(axis=1)
+                    # Stage 1 — FIR anti-aliasing + stride decimation.
+                    # Filter all samples to maintain continuous zi state, then stride-decimate.
+                    filt_i, fir_zi_i = lfilter(fir_taps, [1.0], raw.real, zi=fir_zi_i)
+                    filt_q, fir_zi_q = lfilter(fir_taps, [1.0], raw.imag, zi=fir_zi_q)
+                    n_out = len(raw) // decimate
+                    iq_if = (filt_i[:n_out * decimate:decimate]
+                             + 1j * filt_q[:n_out * decimate:decimate]).astype(np.complex64)
                     iq_if -= iq_if.mean()   # remove RTL-SDR LO leakage (DC offset at 0 Hz)
 
                     # Stage 2 — FM discriminator at audio_rate.
@@ -1528,11 +1557,14 @@ def _save_config() -> None:
         else:
             cfg = {}
         with scanner._lock:
-            new_channels = {
-                freq: ({"label": lbl, "squelch_rms": scanner.channel_squelch[freq]}
-                       if freq in scanner.channel_squelch else {"label": lbl})
-                for freq, lbl in scanner.channels.items()
-            }
+            new_channels = {}
+            for freq, lbl in scanner.channels.items():
+                entry: dict = {"label": lbl}
+                if freq in scanner.channel_squelch:
+                    entry["squelch_rms"] = scanner.channel_squelch[freq]
+                if freq in scanner.channel_gain:
+                    entry["gain"] = scanner.channel_gain[freq]
+                new_channels[freq] = entry if len(entry) > 1 else lbl
         cfg["channels"] = new_channels
         with scanner._lock:
             cfg["skipped"] = sorted(scanner.skipped)
@@ -1549,7 +1581,9 @@ def _channels_event() -> dict:
             "mount":          "sdr",
             "channels":       dict(scanner.channels),
             "channelSquelch": dict(scanner.channel_squelch),
+            "channelGain":    dict(scanner.channel_gain),
             "defaultSquelch": scanner.squelch_rms,
+            "defaultGain":    scanner.gain,
             "skipped":        sorted(scanner.skipped),
         }
 
@@ -1581,6 +1615,7 @@ def _state() -> dict:
     with s._lock:
         channels        = dict(s.channels)
         channel_squelch = dict(s.channel_squelch)
+        channel_gain    = dict(s.channel_gain)
         skipped         = sorted(s.skipped)
     return {
         "type":       "state",
@@ -1595,7 +1630,9 @@ def _state() -> dict:
                         for t, f, lb in s.history[:10]],
             "channels":       channels,
             "channelSquelch": channel_squelch,
+            "channelGain":    channel_gain,
             "defaultSquelch": s.squelch_rms,
+            "defaultGain":    s.gain,
             "skipped":        skipped,
             "lastError":      s.last_error,
         }],
@@ -1639,7 +1676,16 @@ async def api_put_channel(request: Request):
     label = str(body.get("label", freq)).strip() or freq
     sq_raw = body.get("squelch_rms")
     squelch_rms = float(sq_raw) if sq_raw is not None else None
-    scanner.set_channel(freq, label, squelch_rms)
+    # gain: only modify if the key was explicitly sent; empty string means "clear override"
+    if "gain" in body:
+        g = str(body["gain"]).strip()
+        gain_arg: str | None = g if g else None
+    else:
+        gain_arg = ...  # sentinel: don't touch existing gain
+    if gain_arg is ...:
+        scanner.set_channel(freq, label, squelch_rms)
+    else:
+        scanner.set_channel(freq, label, squelch_rms, gain_arg)
     _save_config()
     _emit(_channels_event())
     return {"ok": True, "freq": freq}
@@ -1741,15 +1787,18 @@ def main():
     else:
         print(f"Warning: {config_path} not found — using defaults")
 
-    # Parse channels: supports "freq": "label" or "freq": {"label": "...", "squelch_rms": 0.056}
+    # Parse channels: supports "freq": "label" or "freq": {"label": "...", "squelch_rms": 0.056, "gain": "25.4"}
     raw_channels    = cfg.get("channels", {"446.000": "446.000"})
     channels        : dict[str, str]   = {}
     channel_squelch : dict[str, float] = {}
+    channel_gain    : dict[str, str]   = {}
     for freq, val in raw_channels.items():
         if isinstance(val, dict):
             channels[freq] = val.get("label", freq)
             if "squelch_rms" in val:
                 channel_squelch[freq] = float(val["squelch_rms"])
+            if "gain" in val:
+                channel_gain[freq] = str(val["gain"])
         else:
             channels[freq] = str(val)
 
@@ -1760,6 +1809,7 @@ def main():
         squelch_rms     = cfg.get("squelch_rms", 0.003),
         squelch_hold    = cfg.get("squelch_hold", 2.0),
         channel_squelch = channel_squelch,
+        channel_gain    = channel_gain,
         skipped         = set(cfg.get("skipped", [])),
         ppm             = cfg.get("ppm", 0),
         modulation      = cfg.get("modulation", "fm"),

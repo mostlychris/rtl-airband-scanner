@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//mnt/c/Users/Chris/**)",
+      "Bash(python3 -c \"import py_compile; py_compile.compile\\('app.py', doraise=True\\) and print\\('OK'\\)\")",
+      "PowerShell(python -c \"import py_compile; py_compile.compile\\('c:/Users/Chris/rtl-scanner/app.py', doraise=True\\); print\\('OK'\\)\")"
+    ]
+  }
+}
