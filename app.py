@@ -265,7 +265,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 
 /* Tablet / mobile: sidebar flips to horizontal bar above content */
 @media (max-width:700px){
-  .app-layout{flex-direction:column}
+  .app-layout{flex-direction:column;align-items:stretch}
   main{padding:10px}
   .grid{grid-template-columns:1fr;gap:10px;margin-bottom:10px}
 
