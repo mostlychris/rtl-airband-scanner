@@ -185,9 +185,12 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .sc-btn:active{transform:translateY(1px);box-shadow:0 1px 0 #040609}
 .sc-btn.skip:hover{border-color:rgba(255,170,0,.45);color:var(--amber);box-shadow:0 0 6px rgba(255,170,0,.15),0 2px 0 #040609}
 .sc-btn.skip.active{border-color:rgba(255,170,0,.4);color:var(--amber);background:rgba(255,170,0,.06)}
+.sc-btn.hold:hover{border-color:rgba(255,170,0,.45);color:var(--amber);box-shadow:0 0 6px rgba(255,170,0,.15),0 2px 0 #040609}
+.sc-btn.hold.active{border-color:rgba(255,170,0,.55);color:var(--amber);background:rgba(255,170,0,.08);text-shadow:0 0 6px rgba(255,170,0,.6)}
 .sc-btn.edit:hover{border-color:rgba(0,212,255,.4);color:var(--cyan);box-shadow:var(--cyan-glow),0 2px 0 #040609}
 .sc-btn.del:hover{border-color:rgba(255,68,85,.4);color:var(--red);box-shadow:0 0 6px rgba(255,68,85,.15),0 2px 0 #040609}
 .sc-btn:disabled,.sc-acts.idle .sc-btn{opacity:.2;pointer-events:none}
+.sc-acts.idle .sc-btn.hold.active{opacity:1;pointer-events:auto}
 
 /* ── Channel bank list ─────────────────────────────────────── */
 .chlist{padding:3px 0}
@@ -584,6 +587,7 @@ function onMsg(m) {
       s.channelSquelch = s.channelSquelch || {};
       s.channelGain    = s.channelGain    || {};
       s.skipped        = s.skipped        || [];
+      s.holdFreq       = s.holdFreq       || null;
       S.streams[s.mount] = s;
       (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
     });
@@ -636,6 +640,10 @@ function onMsg(m) {
     s.skipped        = m.skipped || [];
     _editFreq = null; _addingCh = false;
     updateCard(m.mount);
+  } else if (m.type === 'hold_update') {
+    const s = S.streams[m.mount]; if (!s) return;
+    s.holdFreq = m.holdFreq;
+    updateCard(m.mount);
   } else if (m.type === 'conn') {
     const s = S.streams[m.mount]; if (!s) return;
     s.connected = m.connected;
@@ -681,24 +689,32 @@ function cardHtml(s) {
   const primary = rawLbl || af || 'SCANNING';
   const since   = af && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
   const isRx    = !!af;
+  const heldF   = s.holdFreq || null;
+  const isHeld  = !!heldF;
 
   // Panel header: stream name + status LED
   const rxBadge = (audMount===s.mount && S.audioOn)
     ? ' <span class="blink" style="color:var(--green);font-size:9px;letter-spacing:.1em">▶ RX</span>' : '';
   const lockBadge = S.locked===s.mount
     ? ' <span style="font-size:9px;color:var(--blue);letter-spacing:.1em">⬡ LOCK</span>' : '';
+  const holdBadge = isHeld
+    ? ' <span style="font-size:9px;color:var(--amber);letter-spacing:.1em">⏸ HOLD</span>' : '';
   const connStatus = s.connected
-    ? '<span class="sc-status ok"><span class="sc-led"></span>SCANNING</span>'
+    ? '<span class="sc-status ok"><span class="sc-led"></span>' + (isHeld ? 'HOLD' : 'SCANNING') + '</span>'
     : '<span class="sc-status ' + (s.lastError ? 'err' : 'warn') + '"><span class="sc-led"></span>' + (s.lastError ? 'ERROR' : 'OPENING') + '</span>';
   const errHtml = s.lastError
     ? '<div class="serr">⚠ ' + escHtml(s.lastError) + '</div>' : '';
 
   // Action buttons (always rendered; disabled when no active freq)
-  const noAf  = !af;
-  const afSkp = af && skpSet.has(af);
-  const actsHtml = '<div class="sc-acts' + (noAf ? ' idle' : '') + '">'
+  const noAf   = !af;
+  const afSkp  = af && skpSet.has(af);
+  // HOLD target: active freq if available, otherwise the currently held freq (to release)
+  const holdTarget = af || heldF;
+  const actsHtml = '<div class="sc-acts' + (noAf && !isHeld ? ' idle' : '') + '">'
     + '<button class="sc-btn skip' + (afSkp?' active':'') + '" onclick="event.stopPropagation();' + (af?'skipChannel(\''+af+'\')':'') + '" title="' + (afSkp?'Resume scan':'Skip channel') + '">'
     + (afSkp ? '▶ SCAN' : '⊘ SKIP') + '</button>'
+    + '<button class="sc-btn hold' + (isHeld?' active':'') + '" onclick="event.stopPropagation();' + (holdTarget?'holdChannel(\''+holdTarget+'\')':'') + '" title="' + (isHeld?'Release hold — resume scanning':'Hold on current frequency') + '">'
+    + (isHeld ? '⏹ HELD' : '⏸ HOLD') + '</button>'
     + '<button class="sc-btn edit" onclick="event.stopPropagation();' + (af?'editChannel(\''+af+'\')':'') + '" title="Edit label/squelch">✏ EDIT</button>'
     + '<button class="sc-btn del" onclick="event.stopPropagation();' + (af?'deleteChannel(\''+af+'\')':'') + '" title="Remove channel">✕ DEL</button>'
     + '</div>';
@@ -772,7 +788,7 @@ function cardHtml(s) {
     + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
     + (collapsed ? '' : rows + addArea);
 
-  return '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + '</span>' + connStatus + '</div>'
+  return '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + holdBadge + '</span>' + connStatus + '</div>'
     + errHtml
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
     + '<div class="sc-lbl">' + escHtml(primary) + '</div>'
@@ -884,6 +900,13 @@ function deleteChannel(freq) {
 }
 function skipChannel(freq) {
   fetch('/api/skip', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ freq }),
+  }).catch(e => console.error('[api]', e));
+}
+function holdChannel(freq) {
+  fetch('/api/hold', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ freq }),
@@ -1168,6 +1191,7 @@ class RTLFMScanner:
         self._active_freq  = None
         self._active_since = None
         self._history      = deque(maxlen=20)
+        self.hold_freq: str | None = None   # non-None = scanner locked to this frequency
         self.connected     = False
         self.last_error: str | None = None
 
@@ -1225,6 +1249,16 @@ class RTLFMScanner:
                 if self._active_freq == freq:
                     self._active_freq  = None
                     self._active_since = None
+                return True
+
+    def toggle_hold(self, freq: str) -> bool:
+        """Lock scanner to freq (returns True) or release hold (returns False)."""
+        with self._lock:
+            if self.hold_freq == freq:
+                self.hold_freq = None
+                return False
+            else:
+                self.hold_freq = freq
                 return True
 
     def _emit(self, evt: dict):
@@ -1376,11 +1410,16 @@ class RTLFMScanner:
                 scan_idx = scan_idx % n_freqs
 
                 freq_str  = freq_keys[scan_idx]
-                freq_hz   = int(float(freq_str) * 1_000_000)
                 with self._lock:
+                    # Hold overrides the normal scan rotation.
+                    hf = self.hold_freq
+                    if hf and hf in freq_keys:
+                        freq_str = hf
+                        scan_idx = freq_keys.index(hf)
                     label     = self.channels.get(freq_str, freq_str)
                     threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
                     eff_gain  = self.channel_gain.get(freq_str, self.gain)
+                freq_hz   = int(float(freq_str) * 1_000_000)
 
                 if self.debug:
                     print(f"[scan] → {freq_str} MHz  ({label})  gain={eff_gain}")
@@ -1485,6 +1524,8 @@ class RTLFMScanner:
                         self._emit_audio(pcm)
 
                     if not active:
+                        with self._lock:
+                            holding = self.hold_freq == freq_str
                         if squelch_open and time.time() - last_sig_t > self.squelch_hold:
                             squelch_open = False
                             with self._lock:
@@ -1493,10 +1534,10 @@ class RTLFMScanner:
                             if self.debug:
                                 print("[Scanner] squelch closed")
                             self._emit({"type": "freq_clear", "mount": "sdr"})
-                            if n_freqs > 1:
+                            if n_freqs > 1 and not holding:
                                 break
 
-                        elif not squelch_open and n_freqs > 1:
+                        elif not squelch_open and n_freqs > 1 and not holding:
                             if time.time() - dwell_start > self.scan_dwell:
                                 break
 
@@ -1617,6 +1658,7 @@ def _state() -> dict:
         channel_squelch = dict(s.channel_squelch)
         channel_gain    = dict(s.channel_gain)
         skipped         = sorted(s.skipped)
+        hold_freq       = s.hold_freq
     return {
         "type":       "state",
         "audio_rate": s.audio_rate,
@@ -1633,6 +1675,7 @@ def _state() -> dict:
             "channelGain":    channel_gain,
             "defaultSquelch": s.squelch_rms,
             "defaultGain":    s.gain,
+            "holdFreq":       hold_freq,
             "skipped":        skipped,
             "lastError":      s.last_error,
         }],
@@ -1709,6 +1752,17 @@ async def api_toggle_skip(request: Request):
     _save_config()
     _emit(_channels_event())
     return {"ok": True, "skipped": now_skipped}
+
+
+@app.post("/api/hold")
+async def api_toggle_hold(request: Request):
+    body = await request.json()
+    freq = str(body.get("freq", "")).strip()
+    if not freq:
+        return {"ok": False, "error": "freq required"}
+    now_held = scanner.toggle_hold(freq)
+    _emit({"type": "hold_update", "mount": "sdr", "holdFreq": freq if now_held else None})
+    return {"ok": True, "held": now_held}
 
 
 @app.get("/debug")
