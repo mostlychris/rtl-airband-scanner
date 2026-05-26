@@ -685,12 +685,13 @@ function cardHtml(s) {
   const defGn  = s.defaultGain || 'auto';
   const freqs  = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
   const af      = s.activeFreq;
-  const rawLbl  = af ? (chs[af] && chs[af] !== af ? chs[af] : null) : null;
-  const primary = rawLbl || af || 'SCANNING';
-  const since   = af && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
-  const isRx    = !!af;
   const heldF   = s.holdFreq || null;
   const isHeld  = !!heldF;
+  const rawLbl  = af ? (chs[af] && chs[af] !== af ? chs[af] : null) : null;
+  const holdLbl = heldF ? (chs[heldF] && chs[heldF] !== heldF ? chs[heldF] : null) : null;
+  const primary = rawLbl || af || holdLbl || heldF || 'SCANNING';
+  const since   = af && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
+  const isRx    = !!af;
 
   // Panel header: stream name + status LED
   const rxBadge = (audMount===s.mount && S.audioOn)
@@ -776,9 +777,11 @@ function cardHtml(s) {
     addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add Frequency</div>';
   }
 
-  const metaHtml = (af || since)
+  // Show freq below label when active (rawLbl case), or when holding silently (holdLbl case)
+  const metaFreq = (af && rawLbl) ? af : (!af && heldF && holdLbl) ? heldF : null;
+  const metaHtml = (metaFreq || since)
     ? '<div class="sc-meta">'
-      + (af && rawLbl ? '<span class="sc-freq">' + af + '<span class="sc-unit">MHz</span></span>' : '')
+      + (metaFreq ? '<span class="sc-freq">' + metaFreq + '<span class="sc-unit">MHz</span></span>' : '')
       + (since ? '<span class="sc-timer">' + since + '</span>' : '')
       + '</div>'
     : '';
