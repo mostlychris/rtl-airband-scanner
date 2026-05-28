@@ -1222,7 +1222,7 @@ class RTLFMScanner:
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
                  samp_rate: int = 240000, scan_dwell: float = 0.5,
-                 fir_taps: int = 255,
+                 fir_taps: int = 127,
                  debug: bool = False,
                  on_event=None, on_audio=None):
         self.name            = name
@@ -1375,12 +1375,13 @@ class RTLFMScanner:
         hw_rate  = self.audio_rate * decimate
 
         # FIR anti-aliasing filter for decimation.
-        # Selectivity depends on (taps / decimate): more taps → sharper transition.
-        # Default 255-tap Blackman-Harris at 480 kHz puts the stopband below 20 kHz,
-        # giving ~92 dB rejection of adjacent GMRS/MURS channels 25 kHz away.
-        # Cutoff is set slightly inside Nyquist of the output rate (0.9/decimate)
-        # to leave a guard band and avoid passband ripple at the band edge.
-        fir_coeffs = firwin(self.fir_taps, 0.9 / decimate, window='blackmanharris')
+        # Cutoff is set exactly at the output Nyquist (1.0/decimate normalized) so that
+        # decimated noise samples remain uncorrelated — preserving the π²/3 phase-variance
+        # baseline the squelch relies on.  More taps sharpens the transition band so
+        # adjacent channels 25 kHz away fall in the stopband.
+        # Default 127-tap Blackman-Harris at 240 kHz: stopband starts ~19.5 kHz,
+        # giving ~92 dB rejection of signals 25 kHz away (GMRS/MURS channel spacing).
+        fir_coeffs = firwin(self.fir_taps, 1.0 / decimate, window='blackmanharris')
         # Align to USB max-packet-size boundary: RTL-SDR never sends short packets,
         # so a non-multiple-of-512 transfer causes LIBUSB_ERROR_OVERFLOW (-8).
         # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
@@ -1396,7 +1397,7 @@ class RTLFMScanner:
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         # Transition-band analysis: stopband edge ≈ cutoff + (8/taps)*Nyquist
         _nyq = hw_rate / 2
-        _cutoff_hz  = round(0.9 / decimate * _nyq)
+        _cutoff_hz  = round(1.0 / decimate * _nyq)
         _stopband_hz = round(_cutoff_hz + (8 / self.fir_taps) * _nyq)
         print(f"[Scanner] librtlsdr/async — {n_freqs} freq(s), hw_rate={hw_rate}, "
               f"decimate×{decimate}→{self.audio_rate} Hz, "
@@ -2007,7 +2008,7 @@ def main():
         gain            = cfg.get("gain", "auto"),
         samp_rate       = cfg.get("samp_rate", 240000),
         scan_dwell      = cfg.get("scan_dwell", 0.5),
-        fir_taps        = cfg.get("fir_taps", 255),
+        fir_taps        = cfg.get("fir_taps", 127),
         debug           = args.debug,
         on_event        = _emit,
         on_audio        = _audio_cb,
