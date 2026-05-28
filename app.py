@@ -418,7 +418,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 </div>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
-const S = { streams:{}, playing:null, audioOn:false, locked:null };
+const S = { streams:{}, playing:null, audioOn:(localStorage.getItem('a_on')==='true'), locked:null };
 let ws, wsRetry=0;
 let actItems = [];
 let _editFreq    = null;   // freq string currently open in edit mode, or null
@@ -863,6 +863,8 @@ function autoSelect() {
     if (s.activeSince) { const t=new Date(s.activeSince).getTime(); if(t>bestT){bestT=t;best=s.mount;} }
   });
   if (best) S.playing = best;
+  // Resume audio automatically on page reload if it was previously enabled.
+  if (S.audioOn && !audMount) enableAudio();
 }
 function switchAudio(mount) {
   S.playing = mount;
@@ -878,10 +880,10 @@ function lockTo(mount) {
 }
 function toggleAudio() {
   if (!S.audioOn) { document.getElementById('overlay').classList.remove('hidden'); }
-  else { S.audioOn=false; closeAudio(); updateAudioUI(); Object.keys(S.streams).forEach(m=>updateCard(m)); }
+  else { S.audioOn=false; localStorage.setItem('a_on','false'); closeAudio(); updateAudioUI(); Object.keys(S.streams).forEach(m=>updateCard(m)); }
 }
 function enableAudio() {
-  S.audioOn = true; closeOverlay();
+  S.audioOn = true; localStorage.setItem('a_on','true'); closeOverlay();
   autoSelect();
   const target = S.locked || S.playing
     || (Object.values(S.streams).find(s => s.connected) || {}).mount;
@@ -894,10 +896,10 @@ function updateAudioUI() {
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
   const connected = audWs && audWs.readyState === WebSocket.OPEN;
-  if (S.audioOn && audMount) {
-    const s = S.streams[audMount];
+  if (S.audioOn) {
+    const s = audMount ? S.streams[audMount] : null;
     btn.className = 'abtn on';
-    document.getElementById('aico').textContent = connected ? '▶' : '…';
+    document.getElementById('aico').textContent = (audMount && connected) ? '▶' : '…';
     document.getElementById('albl').textContent  = S.locked ? 'Audio Lock' : 'Audio Auto';
     src.textContent = s ? s.name.toUpperCase() : '';
   } else {
