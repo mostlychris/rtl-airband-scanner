@@ -1361,8 +1361,18 @@ class RTLFMScanner:
         # Derive decimation from samp_rate, rounded to nearest integer multiple of
         # audio_rate so the division is exact.  Lower samp_rate = narrower capture
         # bandwidth = better adjacent-channel rejection.
-        decimate = max(1, round(self.samp_rate / self.audio_rate))
+        # RTL-SDR requires sample rate ≥ 225,001 Hz. If samp_rate is below that
+        # (e.g. mistakenly set to the audio rate), snap up to a safe minimum.
+        _RTL_MIN = 225001
+        _target  = max(self.samp_rate, _RTL_MIN)
+        decimate = max(1, round(_target / self.audio_rate))
         hw_rate  = self.audio_rate * decimate
+        if hw_rate < _RTL_MIN:
+            decimate += 1
+            hw_rate   = self.audio_rate * decimate
+        if _target != self.samp_rate:
+            print(f"[Scanner] samp_rate {self.samp_rate} Hz too low for RTL-SDR "
+                  f"(min {_RTL_MIN} Hz) — using {hw_rate} Hz")
 
         # FIR anti-aliasing filter for decimation.
         # Selectivity depends on (taps / decimate): more taps → sharper transition.
