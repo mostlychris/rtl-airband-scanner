@@ -628,6 +628,12 @@ function onMsg(m) {
     });
     renderAll();
     autoSelect();
+    // Resume audio without overlay if the user had it enabled before the refresh
+    if (S.audioOn && !audMount) {
+      const target = S.locked || S.playing || (Object.values(S.streams).find(s=>s.connected)||{}).mount;
+      if (target) switchAudio(target);
+      updateAudioUI();
+    }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
     s.activeFreq  = m.freq;
@@ -863,8 +869,6 @@ function autoSelect() {
     if (s.activeSince) { const t=new Date(s.activeSince).getTime(); if(t>bestT){bestT=t;best=s.mount;} }
   });
   if (best) S.playing = best;
-  // Resume audio automatically on page reload if it was previously enabled.
-  if (S.audioOn && !audMount) enableAudio();
 }
 function switchAudio(mount) {
   S.playing = mount;
@@ -884,7 +888,6 @@ function toggleAudio() {
 }
 function enableAudio() {
   S.audioOn = true; localStorage.setItem('a_on','true'); closeOverlay();
-  autoSelect();
   const target = S.locked || S.playing
     || (Object.values(S.streams).find(s => s.connected) || {}).mount;
   if (target) switchAudio(target);
@@ -1022,7 +1025,8 @@ function initControls() {
 // ── Init ───────────────────────────────────────────────────────────────────────
 connect();
 initControls();
-setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
+if (!S.audioOn) setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
+updateAudioUI();
 </script>
 </body>
 </html>
