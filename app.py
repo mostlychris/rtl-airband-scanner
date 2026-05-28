@@ -1221,7 +1221,8 @@ class RTLFMScanner:
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
-                 samp_rate: int = 250000, scan_dwell: float = 0.5,
+                 samp_rate: int = 480000, scan_dwell: float = 0.5,
+                 fir_taps: int = 255,
                  debug: bool = False,
                  on_event=None, on_audio=None):
         self.name            = name
@@ -1240,9 +1241,9 @@ class RTLFMScanner:
         self.device       = str(device)
         self.gain         = str(gain)
         self.samp_rate    = samp_rate
+        self.fir_taps     = fir_taps
         self.scan_dwell   = scan_dwell
-        # rtl_fm can only downsample, not upsample. Output rate must be ≤ samp_rate.
-        self.audio_rate   = min(samp_rate, AUDIO_RATE)
+        self.audio_rate   = AUDIO_RATE
         self._on_event  = on_event
         self._on_audio  = on_audio
 
@@ -1357,13 +1358,19 @@ class RTLFMScanner:
         freq_keys = list(self.channels.keys())
         n_freqs   = len(freq_keys)
 
-        oversample = 1_000_000 // self.audio_rate + 1
-        hw_rate    = self.audio_rate * oversample
-        decimate   = oversample
-        # FIR anti-aliasing filter for decimation.  63-tap Blackman-Harris window
-        # gives ~90 dB stopband rejection (vs ~13 dB for the old boxcar average),
-        # preventing strong out-of-band signals from aliasing into the decoded channel.
-        fir_taps = firwin(63, 1.0 / decimate, window='blackmanharris')
+        # Derive decimation from samp_rate, rounded to nearest integer multiple of
+        # audio_rate so the division is exact.  Lower samp_rate = narrower capture
+        # bandwidth = better adjacent-channel rejection.
+        decimate = max(1, round(self.samp_rate / self.audio_rate))
+        hw_rate  = self.audio_rate * decimate
+
+        # FIR anti-aliasing filter for decimation.
+        # Selectivity depends on (taps / decimate): more taps → sharper transition.
+        # Default 255-tap Blackman-Harris at 480 kHz puts the stopband below 20 kHz,
+        # giving ~92 dB rejection of adjacent GMRS/MURS channels 25 kHz away.
+        # Cutoff is set slightly inside Nyquist of the output rate (0.9/decimate)
+        # to leave a guard band and avoid passband ripple at the band edge.
+        fir_coeffs = firwin(self.fir_taps, 0.9 / decimate, window='blackmanharris')
         # Align to USB max-packet-size boundary: RTL-SDR never sends short packets,
         # so a non-multiple-of-512 transfer causes LIBUSB_ERROR_OVERFLOW (-8).
         # chunk_n × 2 bytes must be a multiple of 512 → chunk_n multiple of 256.
@@ -1377,10 +1384,15 @@ class RTLFMScanner:
         _deemph_beta  = 1.0 - _deemph_alpha
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
+        # Transition-band analysis: stopband edge ≈ cutoff + (8/taps)*Nyquist
+        _nyq = hw_rate / 2
+        _cutoff_hz  = round(0.9 / decimate * _nyq)
+        _stopband_hz = round(_cutoff_hz + (8 / self.fir_taps) * _nyq)
         print(f"[Scanner] librtlsdr/async — {n_freqs} freq(s), hw_rate={hw_rate}, "
               f"decimate×{decimate}→{self.audio_rate} Hz, "
-              f"scan_dwell={self.scan_dwell}s, squelch_hold={self.squelch_hold}s, "
-              f"squelch_rms={self.squelch_rms}"
+              f"FIR {self.fir_taps}-tap BH: passband 0–{_cutoff_hz} Hz, "
+              f"stopband from ~{_stopband_hz} Hz, "
+              f"scan_dwell={self.scan_dwell}s, squelch_rms={self.squelch_rms}"
               + (f", per-channel overrides: {overrides}" if overrides else ""))
         for fk in freq_keys:
             thr = self.channel_squelch.get(fk, self.squelch_rms)
@@ -1451,6 +1463,14 @@ class RTLFMScanner:
 
         try:
             sdr.set_sample_rate(hw_rate)
+            # Narrow the R820T2 hardware IF filter to match the software capture bandwidth.
+            # This adds an analog pre-filter stage that attenuates strong adjacent-channel
+            # signals before they reach the ADC, reducing both aliasing and AGC pumping.
+            # set_bandwidth is not available on all pyrtlsdr versions; ignore if missing.
+            try:
+                sdr.set_bandwidth(hw_rate)
+            except Exception:
+                pass
             # Tune to the first scan frequency BEFORE applying ppm correction.
             # rtlsdr_set_freq_correction internally calls set_center_freq(dev->freq)
             # to re-apply the correction; if called before any tune, dev->freq is
@@ -1504,8 +1524,8 @@ class RTLFMScanner:
                 _last_dbg_state = None
                 ctcss_buf: list  = []    # accumulation buffer for CTCSS detection
                 ctcss_detected   = True  # optimistic until first window fills
-                fir_zi_i = np.zeros(len(fir_taps) - 1)  # FIR state reset on each freq hop
-                fir_zi_q = np.zeros(len(fir_taps) - 1)
+                fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
+                fir_zi_q = np.zeros(len(fir_coeffs) - 1)
 
                 while self._running:
                     # Exit inner loop immediately if this freq was skipped mid-dwell.
@@ -1519,8 +1539,8 @@ class RTLFMScanner:
 
                     # Stage 1 — FIR anti-aliasing + stride decimation.
                     # Filter all samples to maintain continuous zi state, then stride-decimate.
-                    filt_i, fir_zi_i = lfilter(fir_taps, [1.0], raw.real, zi=fir_zi_i)
-                    filt_q, fir_zi_q = lfilter(fir_taps, [1.0], raw.imag, zi=fir_zi_q)
+                    filt_i, fir_zi_i = lfilter(fir_coeffs, [1.0], raw.real, zi=fir_zi_i)
+                    filt_q, fir_zi_q = lfilter(fir_coeffs, [1.0], raw.imag, zi=fir_zi_q)
                     n_out = len(raw) // decimate
                     iq_if = (filt_i[:n_out * decimate:decimate]
                              + 1j * filt_q[:n_out * decimate:decimate]).astype(np.complex64)
@@ -1975,8 +1995,9 @@ def main():
         modulation      = cfg.get("modulation", "fm"),
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
-        samp_rate       = cfg.get("samp_rate", 250000),
+        samp_rate       = cfg.get("samp_rate", 480000),
         scan_dwell      = cfg.get("scan_dwell", 0.5),
+        fir_taps        = cfg.get("fir_taps", 255),
         debug           = args.debug,
         on_event        = _emit,
         on_audio        = _audio_cb,
