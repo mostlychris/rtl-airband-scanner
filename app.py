@@ -236,7 +236,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 }
 .sc-chl-hdr:hover{color:var(--cyan)}
 .coll-arrow{font-size:8px;opacity:.5}
-.ch{position:relative;display:flex;align-items:center;gap:8px;padding:4px 12px;transition:background .15s;cursor:default}
+.ch{display:flex;align-items:center;gap:8px;padding:4px 12px;transition:background .15s;cursor:default}
 .ch:hover{background:var(--card2)}
 .ch.active{background:var(--gdim);border-left:2px solid var(--green);padding-left:10px}
 .ch.active:hover{background:rgba(45,255,110,.1)}
@@ -249,8 +249,8 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .ch-t{font-size:10px;color:var(--dim);font-family:var(--mono);flex-shrink:0;transition:color .2s}
 .ch.active .ch-t{color:var(--cyan);opacity:.7}
 .noch{padding:12px;color:var(--dim);font-size:10px;text-align:center;letter-spacing:.15em;text-transform:uppercase}
-.ch-acts{position:absolute;right:8px;top:50%;transform:translateY(-50%);display:flex;gap:2px;opacity:0;transition:opacity .12s}
-.ch:hover .ch-acts,.ch.skipped .ch-acts{opacity:1}
+.ch-acts{display:flex;gap:2px;margin-left:auto;flex-shrink:0;visibility:hidden}
+.ch:hover .ch-acts,.ch.skipped .ch-acts{visibility:visible}
 .ch-icon{background:none;border:none;cursor:pointer;padding:1px 5px;font-size:10px;color:var(--muted);border-radius:2px;line-height:1}
 .ch-icon:hover{background:var(--card2);color:var(--text)}
 .ch-icon.del:hover{color:var(--red)}
@@ -332,9 +332,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   .ch{padding:8px 12px}
 
   /* Always show per-row actions (no hover on touch screens) */
-  .ch-acts{opacity:1}
-  /* Hide timestamp to prevent overlap with always-visible actions */
-  .ch-t{display:none}
+  .ch-acts{visibility:visible}
 
   /* Header: drop status text, keep dot indicator */
   header{padding:8px 14px;gap:8px}
