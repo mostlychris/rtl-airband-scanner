@@ -223,6 +223,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .sc-btn.skip.active{border-color:rgba(255,170,0,.4);color:var(--amber);background:rgba(255,170,0,.06)}
 .sc-btn.hold:hover{border-color:rgba(255,170,0,.45);color:var(--amber);box-shadow:0 0 6px rgba(255,170,0,.15),0 2px 0 #040609}
 .sc-btn.hold.active{border-color:rgba(255,170,0,.55);color:var(--amber);background:rgba(255,170,0,.08);text-shadow:0 0 6px rgba(255,170,0,.6)}
+.sc-btn.resume:hover{border-color:rgba(45,255,110,.45);color:var(--green);box-shadow:0 0 6px rgba(45,255,110,.15),0 2px 0 #040609}
 .sc-btn.edit:hover{border-color:rgba(0,212,255,.4);color:var(--cyan);box-shadow:var(--cyan-glow),0 2px 0 #040609}
 .sc-btn.del:hover{border-color:rgba(255,68,85,.4);color:var(--red);box-shadow:0 0 6px rgba(255,68,85,.15),0 2px 0 #040609}
 .sc-btn:disabled,.sc-acts.idle .sc-btn{opacity:.2;pointer-events:none}
@@ -762,6 +763,7 @@ function cardHtml(s) {
     + (afSkp ? '▶ SCAN' : '⊘ SKIP') + '</button>'
     + '<button class="sc-btn hold' + (isHeld?' active':'') + '" onclick="event.stopPropagation();' + (holdTarget?'holdChannel(\''+holdTarget+'\')':'') + '" title="' + (isHeld?'Release hold — resume scanning':'Hold on current frequency') + '">'
     + (isHeld ? '⏹ HELD' : '⏸ HOLD') + '</button>'
+    + (af && !isHeld ? '<button class="sc-btn resume" onclick="event.stopPropagation();resumeScan()" title="Skip to next frequency now">▶▶ NEXT</button>' : '')
     + '<button class="sc-btn edit" onclick="event.stopPropagation();' + (af?'editChannel(\''+af+'\')':'') + '" title="Edit label/squelch">✏ EDIT</button>'
     + '<button class="sc-btn del" onclick="event.stopPropagation();' + (af?'deleteChannel(\''+af+'\')':'') + '" title="Remove channel">✕ DEL</button>'
     + '</div>';
@@ -960,6 +962,9 @@ function skipChannel(freq) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ freq }),
   }).catch(e => console.error('[api]', e));
+}
+function resumeScan() {
+  fetch('/api/resume', { method: 'POST' }).catch(e => console.error('[api]', e));
 }
 function holdChannel(freq) {
   fetch('/api/hold', {
@@ -1255,6 +1260,7 @@ class RTLFMScanner:
         self.hold_freq: str | None = None   # non-None = scanner locked to this frequency
         self.connected     = False
         self.last_error: str | None = None
+        self._resume_event = threading.Event()  # set to force immediate scan advance
 
     @property
     def active_freq(self):
@@ -1328,6 +1334,10 @@ class RTLFMScanner:
             else:
                 self.hold_freq = freq
                 return True
+
+    def resume_scan(self) -> None:
+        """Force the scan loop to advance to the next frequency immediately."""
+        self._resume_event.set()
 
     def _emit(self, evt: dict):
         if self._on_event: self._on_event(evt)
@@ -1535,6 +1545,7 @@ class RTLFMScanner:
                 _last_dbg_state = None
                 ctcss_buf: list  = []    # accumulation buffer for CTCSS detection
                 ctcss_detected   = True  # optimistic until first window fills
+                self._resume_event.clear()  # reset any pending resume from previous dwell
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
                 fir_zi_q = np.zeros(len(fir_coeffs) - 1)
 
@@ -1638,6 +1649,17 @@ class RTLFMScanner:
                     if squelch_open:
                         pcm = (audio * 32767).astype(np.int16).tobytes()
                         self._emit_audio(pcm)
+
+                    # Resume button: advance immediately, closing squelch cleanly first.
+                    if self._resume_event.is_set() and n_freqs > 1:
+                        self._resume_event.clear()
+                        if squelch_open:
+                            squelch_open = False
+                            with self._lock:
+                                self._active_freq  = None
+                                self._active_since = None
+                            self._emit({"type": "freq_clear", "mount": "sdr"})
+                        break
 
                     if not active:
                         with self._lock:
@@ -1896,6 +1918,12 @@ async def api_toggle_hold(request: Request):
     now_held = scanner.toggle_hold(freq)
     _emit({"type": "hold_update", "mount": "sdr", "holdFreq": freq if now_held else None})
     return {"ok": True, "held": now_held}
+
+
+@app.post("/api/resume")
+async def api_resume():
+    scanner.resume_scan()
+    return {"ok": True}
 
 
 @app.get("/debug")
