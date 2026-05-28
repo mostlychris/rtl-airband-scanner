@@ -185,6 +185,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .sc-unit{font-size:11px;color:var(--muted);margin-left:3px}
 .sc-timer{font-family:var(--mono);font-size:11px;color:var(--dim);transition:color .3s;flex-shrink:0}
 .sc-display.active .sc-timer{color:var(--cyan);opacity:.8}
+.sc-pl{font-family:var(--mono);font-size:10px;color:var(--purple);letter-spacing:.08em;flex-shrink:0;opacity:.85}
 
 /* ── Signal meter (segmented LED bar) ─────────────────────── */
 .sqbar{
@@ -828,9 +829,11 @@ function cardHtml(s) {
 
   // Show freq below label when active (rawLbl case), or when holding silently (holdLbl case)
   const metaFreq = (af && rawLbl) ? af : (!af && heldF && holdLbl) ? heldF : null;
-  const metaHtml = (metaFreq || since)
+  const activePL = af && cpl[af] ? cpl[af] : (heldF && cpl[heldF] ? cpl[heldF] : null);
+  const metaHtml = (metaFreq || since || activePL)
     ? '<div class="sc-meta">'
       + (metaFreq ? '<span class="sc-freq">' + metaFreq + '<span class="sc-unit">MHz</span></span>' : '')
+      + (activePL ? '<span class="sc-pl">PL ' + activePL + ' Hz</span>' : '')
       + (since ? '<span class="sc-timer">' + since + '</span>' : '')
       + '</div>'
     : '';
