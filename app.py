@@ -1221,7 +1221,7 @@ class RTLFMScanner:
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
-                 samp_rate: int = 480000, scan_dwell: float = 0.5,
+                 samp_rate: int = 240000, scan_dwell: float = 0.5,
                  fir_taps: int = 255,
                  debug: bool = False,
                  on_event=None, on_audio=None):
@@ -1361,18 +1361,18 @@ class RTLFMScanner:
         # Derive decimation from samp_rate, rounded to nearest integer multiple of
         # audio_rate so the division is exact.  Lower samp_rate = narrower capture
         # bandwidth = better adjacent-channel rejection.
-        # RTL-SDR requires sample rate ≥ 225,001 Hz. If samp_rate is below that
-        # (e.g. mistakenly set to the audio rate), snap up to a safe minimum.
-        _RTL_MIN = 225001
-        _target  = max(self.samp_rate, _RTL_MIN)
-        decimate = max(1, round(_target / self.audio_rate))
+        # RTL-SDR valid sample rates: 225,001–300,000 Hz OR 900,001–3,200,000 Hz.
+        # The range 300,001–900,000 Hz is not supported by the RTL2832U hardware.
+        # Snap any out-of-range value to 240,000 (best selectivity, low range) or
+        # 960,000 (safe high range) depending on which side of the gap we're on.
+        _sr = self.samp_rate
+        if _sr < 225_001 or (300_001 <= _sr <= 900_000):
+            _snapped = 240_000 if _sr <= 600_000 else 960_000
+            print(f"[Scanner] samp_rate {_sr} Hz is outside RTL-SDR valid ranges "
+                  f"(225001–300000 or 900001–3200000) — using {_snapped} Hz")
+            _sr = _snapped
+        decimate = max(1, round(_sr / self.audio_rate))
         hw_rate  = self.audio_rate * decimate
-        if hw_rate < _RTL_MIN:
-            decimate += 1
-            hw_rate   = self.audio_rate * decimate
-        if _target != self.samp_rate:
-            print(f"[Scanner] samp_rate {self.samp_rate} Hz too low for RTL-SDR "
-                  f"(min {_RTL_MIN} Hz) — using {hw_rate} Hz")
 
         # FIR anti-aliasing filter for decimation.
         # Selectivity depends on (taps / decimate): more taps → sharper transition.
@@ -2005,7 +2005,7 @@ def main():
         modulation      = cfg.get("modulation", "fm"),
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
-        samp_rate       = cfg.get("samp_rate", 480000),
+        samp_rate       = cfg.get("samp_rate", 240000),
         scan_dwell      = cfg.get("scan_dwell", 0.5),
         fir_taps        = cfg.get("fir_taps", 255),
         debug           = args.debug,
