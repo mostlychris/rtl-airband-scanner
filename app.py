@@ -74,7 +74,7 @@ PAGE = r"""<!DOCTYPE html>
 :root{
   --bg:#090b0e;--card:#0d1117;--card2:#141b22;--border:#21262d;
   --panel:#05080d;--panel-b:#0d1520;
-  --text:#c9d1d9;--muted:#546e7a;--dim:#1e2d3a;
+  --text:#c9d1d9;--muted:#8aa0b0;--dim:#1e2d3a;
   --green:#2dff6e;--gdim:rgba(45,255,110,.07);--gborder:rgba(45,255,110,.28);
   --amber:#ffaa00;--cyan:#00d4ff;--blue:#4d8aff;--red:#ff4455;--purple:#9966dd;--yellow:#ffcc00;
   --mono:'SF Mono','Fira Code','Consolas',monospace;
@@ -635,14 +635,14 @@ function onMsg(m) {
     s.activeFreq  = m.freq;
     s.activeSince = m.time;
     s.lastError   = null;
-    updateCard(m.mount);
+    updateCard(m.mount, true);
     pushActivity(m.name, m.freq, m.label, m.time);
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
   } else if (m.type === 'freq_clear') {
     const s = S.streams[m.mount]; if (!s) return;
     s.activeFreq  = null;
     s.activeSince = null;
-    updateCard(m.mount);
+    updateCard(m.mount, true);
   } else if (m.type === 'signal') {
     const d = document.getElementById('sqfill_' + eid(m.mount));
     if (d) {
@@ -702,8 +702,10 @@ function renderAll() {
     g.appendChild(d);
   });
 }
-function updateCard(mount) {
+function updateCard(mount, skipIfEditing) {
   const d = document.getElementById('sc' + eid(mount)); if (!d) return;
+  // Don't blow away an active edit row on routine scan events (freq changes, etc.)
+  if (skipIfEditing && (_editFreq !== null || _addingCh)) return;
   const s = S.streams[mount];
   d.className = cardClass(s);
   d.innerHTML = cardHtml(s);
