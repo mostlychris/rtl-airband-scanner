@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
 
-AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 1,008,000 Hz (42× oversample)
+AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 # ── CTCSS (PL tone) detection ──────────────────────────────────────────────────
 _CTCSS_TONES = [
@@ -1266,7 +1266,7 @@ class RTLFMScanner:
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
-                 samp_rate: int = 1008000, scan_dwell: float = 0.5,
+                 samp_rate: int = 240000, scan_dwell: float = 0.5,
                  fir_taps: int = 127,
                  debug: bool = False,
                  on_event=None, on_audio=None):
@@ -2099,7 +2099,7 @@ def main():
         modulation      = cfg.get("modulation", "fm"),
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
-        samp_rate       = cfg.get("samp_rate", 1008000),
+        samp_rate       = cfg.get("samp_rate", 240000),
         scan_dwell      = cfg.get("scan_dwell", 0.5),
         fir_taps        = cfg.get("fir_taps", 127),
         debug           = args.debug,
