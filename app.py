@@ -1656,8 +1656,9 @@ class RTLFMScanner:
                     rms    = signal_level
                     db     = 20.0 * np.log10(max(rms, 1e-9))
                     # Hysteresis: squelch opens above threshold, stays open above
-                    # half-threshold so voice pauses don't retrigger the scanner.
-                    close_thr = threshold * 0.5
+                    # 75 % of threshold.  50 % was too loose — a weak carrier sitting
+                    # just below threshold kept refreshing the hold timer indefinitely.
+                    close_thr = threshold * 0.75
                     active = rms > (close_thr if squelch_open else threshold) and ctcss_detected
                     if self.debug:
                         dbg_state = (freq_str, squelch_open, active)
