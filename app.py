@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse
 
-AUDIO_RATE = 24000   # PCM output rate for the librtlsdr path (hw_rate=1,008,000 / 42)
+AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 1,008,000 Hz (42× oversample)
 
 # ── CTCSS (PL tone) detection ──────────────────────────────────────────────────
 _CTCSS_TONES = [
@@ -1266,7 +1266,7 @@ class RTLFMScanner:
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
-                 samp_rate: int = 240000, scan_dwell: float = 0.5,
+                 samp_rate: int = 1008000, scan_dwell: float = 0.5,
                  fir_taps: int = 127,
                  debug: bool = False,
                  on_event=None, on_audio=None):
@@ -1525,14 +1525,6 @@ class RTLFMScanner:
 
         try:
             sdr.set_sample_rate(hw_rate)
-            # Narrow the R820T2 hardware IF filter to match the software capture bandwidth.
-            # This adds an analog pre-filter stage that attenuates strong adjacent-channel
-            # signals before they reach the ADC, reducing both aliasing and AGC pumping.
-            # set_bandwidth is not available on all pyrtlsdr versions; ignore if missing.
-            try:
-                sdr.set_bandwidth(hw_rate)
-            except Exception:
-                pass
             # Tune to the first scan frequency BEFORE applying ppm correction.
             # rtlsdr_set_freq_correction internally calls set_center_freq(dev->freq)
             # to re-apply the correction; if called before any tune, dev->freq is
@@ -2107,7 +2099,7 @@ def main():
         modulation      = cfg.get("modulation", "fm"),
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
-        samp_rate       = cfg.get("samp_rate", 240000),
+        samp_rate       = cfg.get("samp_rate", 1008000),
         scan_dwell      = cfg.get("scan_dwell", 0.5),
         fir_taps        = cfg.get("fir_taps", 127),
         debug           = args.debug,
