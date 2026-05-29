@@ -1440,6 +1440,7 @@ class RTLFMScanner:
 
         fm_scale      = self.audio_rate / (2.0 * np.pi * 5000.0)
         _NOISE_VAR    = np.pi ** 2 / 3.0
+        _SQUELCH_FADE = 240   # 10 ms ramp at 24 kHz, applied at squelch open/close
         # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
         _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
         _deemph_beta  = 1.0 - _deemph_alpha
@@ -1589,6 +1590,7 @@ class RTLFMScanner:
                 self._resume_event.clear()  # reset any pending resume from previous dwell
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
                 fir_zi_q = np.zeros(len(fir_coeffs) - 1)
+                sq_just_opened = False
 
                 while self._running:
                     # Exit inner loop immediately if this freq was skipped mid-dwell.
@@ -1674,7 +1676,8 @@ class RTLFMScanner:
                         dwell_start = time.time()
 
                         if not squelch_open or self._active_freq != freq_str:
-                            squelch_open = True
+                            squelch_open    = True
+                            sq_just_opened  = True
                             with self._lock:
                                 now   = datetime.now()
                                 self._active_freq  = freq_str
@@ -1688,8 +1691,29 @@ class RTLFMScanner:
                                 "time":  now.isoformat(),
                             })
 
+                    # Pre-compute close condition before emitting audio so the
+                    # final chunk can be faded out rather than cut off abruptly.
+                    should_close_sq = False
+                    holding = False
+                    if not active:
+                        with self._lock:
+                            holding = self.hold_freq == freq_str
+                        if squelch_open and time.time() - last_sig_t > self.squelch_hold:
+                            should_close_sq = True
+
                     if squelch_open:
-                        pcm = (audio * 32767).astype(np.int16).tobytes()
+                        out = audio
+                        if sq_just_opened:
+                            out = audio.copy()
+                            n = min(_SQUELCH_FADE, len(out))
+                            out[:n] *= np.linspace(0.0, 1.0, n, dtype=np.float32)
+                            sq_just_opened = False
+                        if should_close_sq:
+                            if out is audio:
+                                out = audio.copy()
+                            n = min(_SQUELCH_FADE, len(out))
+                            out[-n:] *= np.linspace(1.0, 0.0, n, dtype=np.float32)
+                        pcm = (out * 32767).astype(np.int16).tobytes()
                         self._emit_audio(pcm)
 
                     # Resume button: advance immediately, closing squelch cleanly first.
@@ -1703,23 +1727,19 @@ class RTLFMScanner:
                             self._emit({"type": "freq_clear", "mount": "sdr"})
                         break
 
-                    if not active:
+                    if should_close_sq:
+                        squelch_open = False
                         with self._lock:
-                            holding = self.hold_freq == freq_str
-                        if squelch_open and time.time() - last_sig_t > self.squelch_hold:
-                            squelch_open = False
-                            with self._lock:
-                                self._active_freq  = None
-                                self._active_since = None
-                            if self.debug:
-                                print("[Scanner] squelch closed")
-                            self._emit({"type": "freq_clear", "mount": "sdr"})
-                            if n_freqs > 1 and not holding:
-                                break
-
-                        elif not squelch_open and n_freqs > 1 and not holding:
-                            if time.time() - dwell_start > self.scan_dwell:
-                                break
+                            self._active_freq  = None
+                            self._active_since = None
+                        if self.debug:
+                            print("[Scanner] squelch closed")
+                        self._emit({"type": "freq_clear", "mount": "sdr"})
+                        if n_freqs > 1 and not holding:
+                            break
+                    elif not active and not squelch_open and n_freqs > 1 and not holding:
+                        if time.time() - dwell_start > self.scan_dwell:
+                            break
 
                 scan_idx = (scan_idx + 1) % n_freqs
 
