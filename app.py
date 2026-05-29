@@ -1631,10 +1631,10 @@ class RTLFMScanner:
                     deemph_z = float(zf[0])
                     audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
 
-                    # CTCSS detection — always accumulate when squelch is open so we
-                    # can display the detected tone even on unconfigured frequencies.
+                    # CTCSS detection — accumulate when squelch is open so we can
+                    # display the detected tone even on unconfigured frequencies.
                     # ctcss_detected gates audio when pl_tone is configured (> 0).
-                    if squelch_open or active:
+                    if squelch_open:
                         ctcss_buf.extend(audio.tolist())
                         if len(ctcss_buf) >= _CTCSS_WINDOW:
                             ctcss_detected, detected_ctcss = _ctcss_analyze(
