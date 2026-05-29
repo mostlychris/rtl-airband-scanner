@@ -33,12 +33,17 @@ _CTCSS_TONES = [
 _CTCSS_WINDOW = 4096   # samples to accumulate before evaluating (~170 ms at 24 kHz)
 
 
-def _ctcss_present(buf: np.ndarray, tone_hz: float, sample_rate: float) -> bool:
-    """Return True if tone_hz is the dominant CTCSS tone in buf.
+def _ctcss_analyze(buf: np.ndarray, sample_rate: float,
+                   target_hz: float = 0.0) -> tuple[bool, float | None]:
+    """Analyze buf for CTCSS tone presence.
 
-    Uses FFT to compute power at each standard CTCSS tone frequency, then
-    checks that the target tone has the highest power AND exceeds the average —
-    same logic as RTLSDR-Airband's Goertzel implementation.
+    Returns (gated_open, detected_tone):
+      - detected_tone: the standard tone with the highest power if it is
+        dominant over the average (i.e. a tone is clearly present), else None.
+      - gated_open: True if no target is configured (target_hz == 0) OR
+        the detected tone matches the configured target.
+
+    Same dominant-tone logic as RTLSDR-Airband's Goertzel implementation.
     """
     n = len(buf)
     spectrum = np.abs(np.fft.rfft(buf * np.hanning(n))) ** 2
@@ -48,14 +53,24 @@ def _ctcss_present(buf: np.ndarray, tone_hz: float, sample_rate: float) -> bool:
         b = min(round(freq / bin_hz), len(spectrum) - 1)
         return float(spectrum[b])
 
-    target_power = _bin_power(tone_hz)
-    # Include all standard tones except those within 5 Hz of the target
-    all_powers = [_bin_power(t) for t in _CTCSS_TONES if abs(t - tone_hz) >= 5.0]
-    all_powers.append(target_power)
+    tone_powers = [(t, _bin_power(t)) for t in _CTCSS_TONES]
+    avg_power   = sum(p for _, p in tone_powers) / len(tone_powers)
+    best_tone, best_power = max(tone_powers, key=lambda x: x[1])
 
-    avg_power = sum(all_powers) / len(all_powers)
-    max_power = max(all_powers)
-    return target_power >= max_power and target_power > avg_power
+    detected = best_tone if best_power > avg_power else None
+
+    if target_hz > 0.0:
+        # Gating: target must be the dominant tone
+        target_power = _bin_power(target_hz)
+        all_excluding = [p for t, p in tone_powers if abs(t - target_hz) >= 5.0]
+        all_excluding.append(target_power)
+        avg_ex  = sum(all_excluding) / len(all_excluding)
+        max_ex  = max(all_excluding)
+        gated   = target_power >= max_ex and target_power > avg_ex
+    else:
+        gated = True   # no filter configured — always pass
+
+    return gated, detected
 
 
 # Silence chunk sent to audio WebSocket clients every 5 s when no signal is
@@ -186,6 +201,9 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .sc-timer{font-family:var(--mono);font-size:11px;color:var(--dim);transition:color .3s;flex-shrink:0}
 .sc-display.active .sc-timer{color:var(--cyan);opacity:.8}
 .sc-pl{font-family:var(--mono);font-size:10px;color:var(--purple);letter-spacing:.08em;flex-shrink:0;opacity:.85}
+.sc-ctcss{font-family:var(--mono);font-size:10px;letter-spacing:.08em;flex-shrink:0;transition:color .3s}
+.sc-ctcss.info{color:var(--cyan);opacity:.85}
+.sc-ctcss.match{color:var(--green);text-shadow:var(--glow-sm)}
 
 /* ── Signal meter (segmented LED bar) ─────────────────────── */
 .sqbar{
@@ -638,16 +656,18 @@ function onMsg(m) {
     }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
-    s.activeFreq  = m.freq;
-    s.activeSince = m.time;
-    s.lastError   = null;
+    s.activeFreq    = m.freq;
+    s.activeSince   = m.time;
+    s.lastError     = null;
+    s.detectedCTCSS = null;   // clear on each new frequency
     updateCard(m.mount, true);
     pushActivity(m.name, m.freq, m.label, m.time);
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
   } else if (m.type === 'freq_clear') {
     const s = S.streams[m.mount]; if (!s) return;
-    s.activeFreq  = null;
-    s.activeSince = null;
+    s.activeFreq    = null;
+    s.activeSince   = null;
+    s.detectedCTCSS = null;
     updateCard(m.mount, true);
   } else if (m.type === 'signal') {
     const d = document.getElementById('sqfill_' + eid(m.mount));
@@ -655,6 +675,22 @@ function onMsg(m) {
       const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
       d.style.width = pct + '%';
       d.className = 'sqfill' + (m.active ? ' active' : '');
+    }
+    // Update detected CTCSS tone display in-place (avoids full card re-render)
+    const s = S.streams[m.mount];
+    if (s && m.ctcss !== undefined) {
+      const prev = s.detectedCTCSS;
+      s.detectedCTCSS = m.ctcss || null;
+      if (s.detectedCTCSS !== prev) {
+        const el = document.getElementById('sc_ctcss_' + eid(m.mount));
+        if (el) {
+          const cpl = s.channelPL || {};
+          const configured = s.activeFreq && cpl[s.activeFreq];
+          el.textContent  = s.detectedCTCSS ? ('◈ ' + s.detectedCTCSS + ' Hz') : '';
+          el.className    = 'sc-ctcss' + (s.detectedCTCSS
+            ? (configured ? ' match' : ' info') : '');
+        }
+      }
     }
     // Squelch tail suppression: gate audio closed on signal drop, open on signal open.
     // Only applied to the currently playing mount so background activity is ignored.
@@ -830,12 +866,16 @@ function cardHtml(s) {
   }
 
   // Show freq below label when active (rawLbl case), or when holding silently (holdLbl case)
-  const metaFreq = (af && rawLbl) ? af : (!af && heldF && holdLbl) ? heldF : null;
-  const activePL = af && cpl[af] ? cpl[af] : (heldF && cpl[heldF] ? cpl[heldF] : null);
-  const metaHtml = (metaFreq || since || activePL)
+  const metaFreq    = (af && rawLbl) ? af : (!af && heldF && holdLbl) ? heldF : null;
+  const activePL    = af && cpl[af] ? cpl[af] : (heldF && cpl[heldF] ? cpl[heldF] : null);
+  const initCTCSS   = s.detectedCTCSS || null;
+  const ctcssMatch  = initCTCSS && activePL;
+  const metaHtml = (metaFreq || since || activePL || true)   // always render for in-place updates
     ? '<div class="sc-meta">'
       + (metaFreq ? '<span class="sc-freq">' + metaFreq + '<span class="sc-unit">MHz</span></span>' : '')
       + (activePL ? '<span class="sc-pl">PL ' + activePL + ' Hz</span>' : '')
+      + '<span class="sc-ctcss' + (initCTCSS ? (ctcssMatch ? ' match' : ' info') : '') + '" id="sc_ctcss_' + eid(s.mount) + '">'
+      + (initCTCSS ? '◈ ' + initCTCSS + ' Hz' : '') + '</span>'
       + (since ? '<span class="sc-timer">' + since + '</span>' : '')
       + '</div>'
     : '';
@@ -1543,8 +1583,9 @@ class RTLFMScanner:
                 last_iq         = None   # per-frequency; valid across chunks with async continuity
                 deemph_z        = 0.0
                 _last_dbg_state = None
-                ctcss_buf: list  = []    # accumulation buffer for CTCSS detection
-                ctcss_detected   = True  # optimistic until first window fills
+                ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
+                ctcss_detected: bool = True  # optimistic until first window fills
+                detected_ctcss: float | None = None   # last detected tone for display
                 self._resume_event.clear()  # reset any pending resume from previous dwell
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
                 fir_zi_q = np.zeros(len(fir_coeffs) - 1)
@@ -1590,19 +1631,19 @@ class RTLFMScanner:
                     deemph_z = float(zf[0])
                     audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
 
-                    # CTCSS (PL tone) gating — accumulate audio and evaluate every
-                    # _CTCSS_WINDOW samples.  ctcss_detected starts True so the first
-                    # window passes through; after that it reflects the actual tone check.
-                    if pl_tone > 0.0:
+                    # CTCSS detection — always accumulate when squelch is open so we
+                    # can display the detected tone even on unconfigured frequencies.
+                    # ctcss_detected gates audio when pl_tone is configured (> 0).
+                    if squelch_open or active:
                         ctcss_buf.extend(audio.tolist())
                         if len(ctcss_buf) >= _CTCSS_WINDOW:
-                            ctcss_detected = _ctcss_present(
+                            ctcss_detected, detected_ctcss = _ctcss_analyze(
                                 np.array(ctcss_buf[:_CTCSS_WINDOW], dtype=np.float32),
-                                pl_tone, self.audio_rate,
+                                self.audio_rate, pl_tone,
                             )
                             if self.debug:
-                                print(f"[ctcss] {freq_str}: pl={pl_tone} Hz  "
-                                      f"{'PRESENT' if ctcss_detected else 'absent'}")
+                                print(f"[ctcss] {freq_str}: detected={detected_ctcss}  "
+                                      f"pl={pl_tone}  gated={'open' if ctcss_detected else 'closed'}")
                             ctcss_buf = ctcss_buf[_CTCSS_WINDOW:]
 
                     # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
@@ -1625,7 +1666,8 @@ class RTLFMScanner:
                             _last_dbg_state = dbg_state
 
                     self._emit({"type": "signal", "mount": "sdr",
-                                "db": round(db, 1), "active": active})
+                                "db": round(db, 1), "active": active,
+                                "ctcss": detected_ctcss})
 
                     if active:
                         last_sig_t  = time.time()
