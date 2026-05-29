@@ -764,7 +764,7 @@ function cardHtml(s) {
   const cgain  = s.channelGain    || {};
   const cpl    = s.channelPL      || {};
   const skpSet = new Set(s.skipped || []);
-  const defSq  = (s.defaultSquelch || 0.032).toFixed(3);
+  const defSq  = (s.defaultSquelch || 0.05).toFixed(3);
   const defGn  = s.defaultGain || 'auto';
   const freqs  = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
   const af      = s.activeFreq;
@@ -1258,7 +1258,7 @@ class RTLFMScanner:
     CHUNK_SECS = 0.05  # seconds of audio per processing chunk (smaller = faster scan response)
 
     def __init__(self, name: str, channels: dict[str, str],
-                 squelch: int = 70, squelch_rms: float = 0.003,
+                 squelch_rms: float = 0.05,
                  squelch_hold: float = 2.0,
                  channel_squelch: dict[str, float] | None = None,
                  channel_gain: dict[str, str] | None = None,
@@ -1273,8 +1273,7 @@ class RTLFMScanner:
         self.name            = name
         self.channels        = channels
         self.frequencies     = sorted(float(f) for f in channels)
-        self.squelch         = squelch
-        self.squelch_rms     = squelch_rms    # default Python-side threshold (0.0–1.0)
+        self.squelch_rms     = squelch_rms    # default phase-variance threshold (0.0–1.0)
         self.squelch_hold    = squelch_hold   # seconds before clearing inactive freq
         self.channel_squelch = channel_squelch or {}  # per-freq squelch overrides
         self.channel_gain    = channel_gain    or {}  # per-freq gain overrides (e.g. "25.4" or "auto")
@@ -2097,8 +2096,7 @@ def main():
     scanner = RTLFMScanner(
         name            = cfg.get("name", "Scanner"),
         channels        = channels,
-        squelch         = cfg.get("squelch", 70),
-        squelch_rms     = cfg.get("squelch_rms", 0.003),
+        squelch_rms     = cfg.get("squelch_rms", 0.05),
         squelch_hold    = cfg.get("squelch_hold", 2.0),
         channel_squelch = channel_squelch,
         channel_gain    = channel_gain,
