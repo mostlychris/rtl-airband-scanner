@@ -1441,6 +1441,7 @@ class RTLFMScanner:
         fm_scale      = self.audio_rate / (2.0 * np.pi * 5000.0)
         _NOISE_VAR    = np.pi ** 2 / 3.0
         _SQUELCH_FADE = 240   # 10 ms ramp at 24 kHz, applied at squelch open/close
+        _OPEN_DEBOUNCE = 3    # consecutive active chunks required to open squelch (~150 ms)
         # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
         _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
         _deemph_beta  = 1.0 - _deemph_alpha
@@ -1591,6 +1592,7 @@ class RTLFMScanner:
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
                 fir_zi_q = np.zeros(len(fir_coeffs) - 1)
                 sq_just_opened = False
+                open_debounce  = 0
 
                 while self._running:
                     # Exit inner loop immediately if this freq was skipped mid-dwell.
@@ -1672,24 +1674,34 @@ class RTLFMScanner:
                                 "ctcss": detected_ctcss})
 
                     if active:
-                        last_sig_t  = time.time()
-                        dwell_start = time.time()
-
-                        if not squelch_open or self._active_freq != freq_str:
-                            squelch_open    = True
-                            sq_just_opened  = True
-                            with self._lock:
-                                now   = datetime.now()
-                                self._active_freq  = freq_str
-                                self._active_since = now
-                                self._history.appendleft((now, freq_str, label))
-                            if self.debug:
-                                print(f"[Scanner] active: {freq_str} MHz  ({db:.1f} dB)")
-                            self._emit({
-                                "type":  "freq_change", "mount": "sdr",
-                                "name":  self.name, "freq": freq_str, "label": label,
-                                "time":  now.isoformat(),
-                            })
+                        if squelch_open:
+                            # Already open: extend hold/dwell timers normally.
+                            last_sig_t  = time.time()
+                            dwell_start = time.time()
+                            open_debounce = 0
+                        else:
+                            # Debounce: require consecutive active chunks before opening.
+                            # Prevents brief noise spikes from triggering hold.
+                            open_debounce += 1
+                            if open_debounce >= _OPEN_DEBOUNCE:
+                                last_sig_t  = time.time()
+                                dwell_start = time.time()
+                                squelch_open    = True
+                                sq_just_opened  = True
+                                with self._lock:
+                                    now   = datetime.now()
+                                    self._active_freq  = freq_str
+                                    self._active_since = now
+                                    self._history.appendleft((now, freq_str, label))
+                                if self.debug:
+                                    print(f"[Scanner] active: {freq_str} MHz  ({db:.1f} dB)")
+                                self._emit({
+                                    "type":  "freq_change", "mount": "sdr",
+                                    "name":  self.name, "freq": freq_str, "label": label,
+                                    "time":  now.isoformat(),
+                                })
+                    else:
+                        open_debounce = 0
 
                     # Pre-compute close condition before emitting audio so the
                     # final chunk can be faded out rather than cut off abruptly.
