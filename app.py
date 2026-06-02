@@ -1577,7 +1577,7 @@ class RTLFMScanner:
                 deemph_z        = 0.0
                 _last_dbg_state = None
                 ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
-                ctcss_detected: bool = True  # optimistic until first window fills
+                ctcss_detected: bool = (pl_tone == 0.0)  # pessimistic for PL channels; True when no PL configured
                 detected_ctcss: float | None = None   # last detected tone for display
                 self._resume_event.clear()  # reset any pending resume from previous dwell
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
@@ -1626,21 +1626,6 @@ class RTLFMScanner:
                     deemph_z = float(zf[0])
                     audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
 
-                    # CTCSS detection — accumulate when squelch is open so we can
-                    # display the detected tone even on unconfigured frequencies.
-                    # ctcss_detected gates audio when pl_tone is configured (> 0).
-                    if squelch_open:
-                        ctcss_buf.extend(audio.tolist())
-                        if len(ctcss_buf) >= _CTCSS_WINDOW:
-                            ctcss_detected, detected_ctcss = _ctcss_analyze(
-                                np.array(ctcss_buf[:_CTCSS_WINDOW], dtype=np.float32),
-                                self.audio_rate, pl_tone,
-                            )
-                            if self.debug:
-                                print(f"[ctcss] {freq_str}: detected={detected_ctcss}  "
-                                      f"pl={pl_tone}  gated={'open' if ctcss_detected else 'closed'}")
-                            ctcss_buf = ctcss_buf[_CTCSS_WINDOW:]
-
                     # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
                     # a captured FM carrier drives it near zero.
                     noise_ratio  = min(float(np.var(demod)) / _NOISE_VAR, 1.0)
@@ -1651,7 +1636,29 @@ class RTLFMScanner:
                     # 75 % of threshold.  50 % was too loose — a weak carrier sitting
                     # just below threshold kept refreshing the hold timer indefinitely.
                     close_thr = threshold * 0.75
-                    active = rms > (close_thr if squelch_open else threshold) and ctcss_detected
+
+                    # CTCSS detection — accumulate whenever a carrier is present (above
+                    # squelch threshold) so that on PL-gated channels the tone is
+                    # confirmed *before* squelch opens, eliminating the false-open burst.
+                    # On non-PL channels ctcss_detected is always True (no gating needed).
+                    signal_present = rms > (close_thr if squelch_open else threshold)
+                    if signal_present or squelch_open:
+                        ctcss_buf.extend(audio.tolist())
+                        if len(ctcss_buf) >= _CTCSS_WINDOW:
+                            ctcss_detected, detected_ctcss = _ctcss_analyze(
+                                np.array(ctcss_buf[:_CTCSS_WINDOW], dtype=np.float32),
+                                self.audio_rate, pl_tone,
+                            )
+                            if self.debug:
+                                print(f"[ctcss] {freq_str}: detected={detected_ctcss}  "
+                                      f"pl={pl_tone}  gated={'open' if ctcss_detected else 'closed'}")
+                            ctcss_buf = ctcss_buf[_CTCSS_WINDOW:]
+                    elif pl_tone > 0.0:
+                        # Carrier gone — reset so the next transmission is evaluated fresh.
+                        ctcss_buf.clear()
+                        ctcss_detected = False
+
+                    active = signal_present and ctcss_detected
                     if self.debug:
                         dbg_state = (freq_str, squelch_open, active)
                         if dbg_state != _last_dbg_state:

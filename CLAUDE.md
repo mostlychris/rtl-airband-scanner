@@ -5,16 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Running the app
 
 ```bash
-# Web UI scanner (primary — requires RTL-SDR hardware)
 python3 app.py                          # default port 8080
 python3 app.py --listen-port 9000
 python3 app.py --config /path/to/cfg.json
 python3 app.py --debug                  # log every chunk: freq, dB, squelch state
-
-# Terminal UI scanner (Pi-only, Icecast-connected variant)
-python3 scanner.py                      # uses scanner_config.json
-python3 scanner.py --host 172.31.10.192 --mount /ham.mp3 --mount /air.mp3
-python3 scanner.py --audio              # route audio through ffmpeg → PulseAudio/ALSA
 ```
 
 ## Dependencies
@@ -22,12 +16,11 @@ python3 scanner.py --audio              # route audio through ffmpeg → PulseAu
 ```bash
 sudo apt install rtl-sdr python3-numpy
 pip install fastapi "uvicorn[standard]" pyrtlsdr scipy
-# scanner.py only: pip install rich
 ```
 
 ## Configuration
 
-`scanner_config.json` (copied from `scanner_config.example.json`) drives both scripts. Channel values support two forms:
+`scanner_config.json` (copied from `scanner_config.example.json`) drives `app.py`. Channel values support two forms:
 
 ```json
 "channels": {
@@ -42,9 +35,7 @@ Note: the old `squelch` integer key is ignored — use `squelch_rms` (float 0.0�
 
 ## Architecture
 
-There are two independent entry points:
-
-### `app.py` — Web UI (primary)
+### `app.py`
 
 Single-file FastAPI server (~2100 lines). The entire HTML/CSS/JS frontend is embedded in the `PAGE` string constant near the top.
 
@@ -81,12 +72,6 @@ Single-file FastAPI server (~2100 lines). The entire HTML/CSS/JS frontend is emb
 - Audio graph: `PCMRingProcessor` → HP BiquadFilter → LP BiquadFilter → Volume GainNode → Gate GainNode → destination. The gate is used for squelch tail suppression.
 - Control WebSocket (`/ws`) drives all UI updates. Scanner state is normalized into `S.streams[mount]`.
 - Audio settings (`vol`, `hp`, `lp`, `sqtail`) are persisted in `localStorage`.
-
-### `scanner.py` — Terminal UI (Raspberry Pi / Icecast)
-
-Standalone terminal display. Connects to one or more RTLSDR-Airband Icecast streams via raw sockets, reads ICY `StreamTitle` metadata to detect the active frequency, and renders a live `rich` table. Does not do any RF demodulation itself — relies on RTLSDR-Airband doing that and setting `send_scan_freq_tags = true` in its Icecast output blocks.
-
-**Key classes:** `IcyStream` (raw socket, strips ICY metadata blocks), `StreamMonitor` (per-stream background thread), `AudioSink` (ffmpeg → PulseAudio/ALSA), `Scanner` (UI loop).
 
 ## Signal processing details
 
