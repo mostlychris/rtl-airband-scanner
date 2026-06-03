@@ -401,7 +401,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   </h1>
   <div class="dot" id="wdot"></div>
   <span class="st" id="wst">Connecting…</span>
-  <span class="st" style="opacity:.35;font-size:.7em;margin-left:6px">v""" + VERSION + """</span>
+  <span class="st" style="opacity:.35;font-size:.7em;margin-left:6px">v__VERSION__</span>
   <div class="spacer"></div>
   <span class="asrc" id="asrc"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
@@ -1858,7 +1858,8 @@ async def _shutdown():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return HTMLResponse(content=PAGE, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(content=PAGE.replace('__VERSION__', VERSION, 1),
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/manifest.json")
