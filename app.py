@@ -487,12 +487,15 @@ const A = {
   lp:     parseInt(  localStorage.getItem('a_lp')     ?? '3000', 10),
   sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
 };
-let _sqActive = true;   // tracks last squelch state to drive gate transitions
-let _gateRaf  = null;   // requestAnimationFrame handle for squelch-tail fade
-let _gateGain = 1.0;    // 0–1 multiplier applied on top of A.vol
-let audMount  = null;
-let _audEl    = null;   // HTMLAudioElement — plays /stream natively (no AudioContext
-                        // interception) so Android's OS media system sees real audio
+let _sqActive  = true;   // tracks last squelch state to drive gate transitions
+let _gateRaf   = null;   // requestAnimationFrame handle for squelch-tail fade
+let _gateGain  = 1.0;    // 0–1 multiplier applied on top of A.vol
+let audMount   = null;
+let _audEl     = null;   // HTMLAudioElement
+let _mseAbort  = null;   // AbortController for the MSE fetch loop
+let _mseActive = false;  // true when feeding the element via MediaSource
+let _retries   = 0;
+let _stallTimer = null;
 
 function _applyVolume() {
   if (_audEl) _audEl.volume = Math.min(1, Math.max(0, A.vol * _gateGain));
@@ -504,15 +507,11 @@ function _setGate(open) {
     _gateGain = 1.0;
     _applyVolume();
   } else {
-    // Ramp volume to 0 over ~50 ms to mute squelch-tail noise
-    const start   = performance.now();
-    const startGain = _gateGain;
-    const RAMP_MS = 50;
+    const start = performance.now(), startGain = _gateGain, RAMP = 50;
     const step = ts => {
-      _gateGain = Math.max(0, startGain * (1 - (ts - start) / RAMP_MS));
+      _gateGain = Math.max(0, startGain * (1 - (ts - start) / RAMP));
       _applyVolume();
-      if (_gateGain > 0) _gateRaf = requestAnimationFrame(step);
-      else _gateRaf = null;
+      _gateRaf = _gateGain > 0 ? requestAnimationFrame(step) : null;
     };
     _gateRaf = requestAnimationFrame(step);
   }
@@ -521,46 +520,117 @@ function _setGate(open) {
 function _initAudEl() {
   if (_audEl) return;
   _audEl = new Audio();
-  // Android's Doze mode blocks WAV streams after ~5 min of silence.
-  // MP3 via /stream.mp3 is treated as native radio media, surviving Doze
-  // with a proper foreground service.  PC browsers keep the WAV stream.
-  _audEl.src = /Android/i.test(navigator.userAgent) ? '/stream.mp3' : '/stream';
   _audEl.volume = A.vol;
-
-  let _retries   = 0;
-  let _stallTimer = null;
-
-  _audEl.addEventListener('playing', () => {
-    _retries = 0;
-    clearTimeout(_stallTimer);
-  });
-
-  // Exponential backoff on stream errors so a persistently broken stream
-  // (e.g. ffmpeg not installed) doesn't spam retries or the overlay.
-  _audEl.onerror = () => {
-    if (!S.audioOn) return;
-    _retries++;
-    const delay = Math.min(1000 * _retries, 30000);
-    console.warn(`[audio] stream error — retry ${_retries} in ${delay} ms`);
-    setTimeout(_reloadStream, delay);
-  };
-
-  // Stalled: give the browser 4 s to recover before forcing a reload.
+  _audEl.addEventListener('playing', () => { _retries = 0; clearTimeout(_stallTimer); });
   _audEl.addEventListener('stalled', () => {
     if (!S.audioOn) return;
     clearTimeout(_stallTimer);
     _stallTimer = setTimeout(_reloadStream, 4000);
   });
+  _audEl.onerror = () => {
+    if (!S.audioOn) return;
+    _retries++;
+    setTimeout(_reloadStream, Math.min(1000 * _retries, 30000));
+  };
+
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  if (isAndroid && window.MediaSource && MediaSource.isTypeSupported('audio/mpeg')) {
+    // MSE path: we feed the SourceBuffer manually so Chrome buffers only
+    // ~1 s instead of the 10+ s it holds for plain HTTP audio streams.
+    // The <audio> element remains native so Android grants media focus.
+    _mseActive = true;
+    _mseConnect();
+  } else {
+    _audEl.src = isAndroid ? '/stream.mp3' : '/stream';
+  }
+}
+
+async function _mseConnect() {
+  if (_mseAbort) { _mseAbort.abort(); _mseAbort = null; }
+  const ms     = new MediaSource();
+  const objUrl = URL.createObjectURL(ms);
+  _audEl.src   = objUrl;
+
+  await new Promise(res => ms.addEventListener('sourceopen', res, { once: true }));
+  URL.revokeObjectURL(objUrl);
+
+  let sb;
+  try {
+    sb = ms.addSourceBuffer('audio/mpeg');
+  } catch (e) {
+    // MSE not supported for this type — fall back to direct src
+    _mseActive  = false;
+    _audEl.src = '/stream.mp3';
+    return;
+  }
+
+  const waitSb = () => sb.updating
+    ? new Promise(r => sb.addEventListener('updateend', r, { once: true }))
+    : Promise.resolve();
+
+  _mseAbort = new AbortController();
+
+  const TARGET_LAG = 0.5;   // seconds behind live edge to target
+  const MAX_LAG    = 1.5;   // seconds; seek forward if drift exceeds this
+
+  // On first canplay, jump to the live edge so we don't start playing content
+  // that was buffered while the encoder was warming up (which would be 3–10 s
+  // stale by the time Chrome fires the event).
+  let _jumped = false;
+  const _jumpToLive = () => {
+    if (_jumped || !sb || !sb.buffered.length) return;
+    _jumped = true;
+    const liveEdge = sb.buffered.end(sb.buffered.length - 1);
+    try { _audEl.currentTime = Math.max(0, liveEdge - TARGET_LAG); } catch (_) {}
+  };
+  _audEl.addEventListener('canplay', _jumpToLive, { once: true });
+
+  // Ongoing watchdog: if playhead drifts more than MAX_LAG behind the live
+  // edge (e.g. after a CPU stall or Chrome background throttle), seek forward.
+  const _watchdog = setInterval(() => {
+    if (!sb || !_audEl || _audEl.paused) return;
+    if (!sb.buffered.length) return;
+    const liveEdge = sb.buffered.end(sb.buffered.length - 1);
+    if (liveEdge - _audEl.currentTime > MAX_LAG) {
+      try { _audEl.currentTime = liveEdge - TARGET_LAG; } catch (_) {}
+    }
+  }, 500);
+
+  try {
+    const resp   = await fetch('/stream.mp3', { signal: _mseAbort.signal });
+    const reader = resp.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || ms.readyState !== 'open') break;
+      await waitSb();
+      try { sb.appendBuffer(value); } catch (_) {}
+      await waitSb();
+      // Trim old data behind the playhead to bound memory use
+      if (sb.buffered.length && _audEl.currentTime > 0.5) {
+        const trimTo = _audEl.currentTime - 0.2;
+        if (trimTo > sb.buffered.start(0)) {
+          try { sb.remove(sb.buffered.start(0), trimTo); } catch (_) {}
+          await waitSb();
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError' && S.audioOn)
+      setTimeout(_mseConnect, Math.min(1000 * (++_retries), 30000));
+  } finally {
+    clearInterval(_watchdog);
+    _audEl.removeEventListener('canplay', _jumpToLive);
+  }
 }
 
 function _reloadStream() {
   if (!_audEl || !S.audioOn) return;
-  _audEl.load();
-  // Automatic retry — do NOT show the overlay.  If the stream is broken
-  // (e.g. ffmpeg missing) the user will see the spinner; they can tap the
-  // audio button once to retry manually.  The overlay only appears when the
-  // user explicitly tries to enable audio and the browser blocks play().
-  _audEl.play().catch(() => updateAudioUI());
+  if (_mseActive) {
+    _mseConnect();
+  } else {
+    _audEl.load();
+    _audEl.play().catch(() => updateAudioUI());
+  }
 }
 
 function openAudioStream(mount) {
@@ -2097,7 +2167,9 @@ async def audio_stream_mp3(request: Request):
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
             '-fflags', '+flush_packets',          # flush output after every frame
             '-f', 's16le', '-ar', str(rate), '-ac', '1', '-i', 'pipe:0',
-            '-c:a', 'libmp3lame', '-b:a', '32k', '-f', 'mp3', 'pipe:1',
+            '-c:a', 'libmp3lame', '-b:a', '32k',
+            '-reservoir', '0',      # disable bit reservoir — each frame flushes immediately
+            '-f', 'mp3', 'pipe:1',
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
