@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.6.1"
+VERSION    = "2.6.2"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -523,23 +523,47 @@ function _initAudEl() {
   _audEl = new Audio();
   _audEl.src = '/stream';
   _audEl.volume = A.vol;
+
+  // Stream error — reload and resume after a short delay.
+  // play() succeeds without a gesture once the user has already granted
+  // autoplay for this session (Chrome tracks user activation per tab).
   _audEl.onerror = () => {
-    console.warn('[audio] stream error, retrying in 2 s');
-    setTimeout(() => { if (S.audioOn && _audEl) { _audEl.load(); _audEl.play().catch(() => {}); } }, 2000);
+    if (!S.audioOn) return;
+    console.warn('[audio] stream error — reloading in 2 s');
+    setTimeout(_reloadStream, 2000);
   };
+
+  // Stalled: browser stopped receiving data (e.g. silence gap too long).
+  // Give it 3 s to recover on its own before forcing a reload.
+  let _stallTimer = null;
+  _audEl.addEventListener('stalled', () => {
+    if (!S.audioOn) return;
+    clearTimeout(_stallTimer);
+    _stallTimer = setTimeout(_reloadStream, 3000);
+  });
+  _audEl.addEventListener('playing', () => clearTimeout(_stallTimer));
+}
+
+function _reloadStream() {
+  if (!_audEl || !S.audioOn) return;
+  _audEl.load();
+  _audEl.play().catch(() => {
+    // Gesture required again (e.g. after a page wake from deep background).
+    document.getElementById('overlay').classList.remove('hidden');
+  });
 }
 
 function openAudioStream(mount) {
-  if (_audEl && !_audEl.paused) return;
   audMount  = mount;
   _sqActive = true;
   _gateGain = 1.0;
   _initAudEl();
   _applyVolume();
-  _audEl.play().catch(() => {
-    // Autoplay blocked — show overlay so the user can tap to unblock.
-    document.getElementById('overlay').classList.remove('hidden');
-  });
+  if (_audEl.paused) {
+    _audEl.play().catch(() => {
+      document.getElementById('overlay').classList.remove('hidden');
+    });
+  }
   _updateMediaSession(true);
   updateAudioUI();
 }
@@ -864,10 +888,20 @@ function toggleAudio() {
 }
 function enableAudio() {
   S.audioOn = true; localStorage.setItem('a_on','true'); closeOverlay();
-  const target = S.locked || S.playing
-    || (Object.values(S.streams).find(s => s.connected) || {}).mount;
-  if (target) switchAudio(target);
+  // Always start the stream element right here — this is a gesture context,
+  // so play() is guaranteed to succeed regardless of whether S.streams is
+  // populated yet.  openAudioStream (called when state arrives) will no-op
+  // since the element is already playing.
+  _initAudEl();
+  _gateGain = 1.0; _applyVolume();
+  _audEl.play().catch(() => {});
+  audMount = audMount
+    || S.locked || S.playing
+    || (Object.values(S.streams).find(s => s.connected) || {}).mount
+    || 'sdr';
+  _updateMediaSession(true);
   updateAudioUI();
+  Object.keys(S.streams).forEach(m => updateCard(m));
 }
 function closeOverlay() { document.getElementById('overlay').classList.add('hidden'); }
 function updateAudioUI() {
@@ -1004,12 +1038,16 @@ document.addEventListener('visibilitychange', () => {
     wsRetry = 0;
     connect();
   }
-  // Resume the audio element if it was paused while locked
+  // Resume the audio element if it was paused while locked.
+  // visibilitychange counts as user activation in Chrome, so play() works here.
   if (S.audioOn && _audEl && _audEl.paused) {
-    _audEl.play().catch(() => {});
+    _audEl.play().catch(() => {
+      document.getElementById('overlay').classList.remove('hidden');
+    });
   }
 });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+_initAudEl();   // pre-create the element so the /stream connection opens early
 connect();
 initControls();
 if (!S.audioOn) setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
