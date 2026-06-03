@@ -524,6 +524,9 @@ function _initAudEl() {
   _audEl.addEventListener('playing', () => { _retries = 0; clearTimeout(_stallTimer); });
   _audEl.addEventListener('stalled', () => {
     if (!S.audioOn) return;
+    // MSE seeks (canplay jump, watchdog) cause spurious stalled events — the
+    // watchdog and fetch error path handle real MSE failures, so skip here.
+    if (_mseActive) return;
     clearTimeout(_stallTimer);
     _stallTimer = setTimeout(_reloadStream, 4000);
   });
