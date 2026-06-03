@@ -634,9 +634,30 @@ function _updateMediaSession(playing) {
   }
 }
 
-// Silent looping <audio> element — Android Chrome requires an HTMLAudioElement
-// to recognise the tab as having active media, which prevents the renderer from
-// being frozen and WebSocket connections from being dropped on screen lock.
+// ── Background-audio keep-alive ────────────────────────────────────────────────
+// Two mechanisms work together to prevent Android Chrome from freezing the
+// renderer (and dropping WebSockets) while the screen is off:
+//
+//  1. Screen Wake Lock: keeps the screen on while audio is enabled, so the
+//     auto-lock timeout never fires and Chrome stays fully active.
+//     Re-acquired on each visibilitychange (lock releases it automatically).
+//
+//  2. Near-silent HTMLAudioElement loop: volume 0.001 is inaudible but
+//     non-zero, which Chrome counts as active audio output — a stronger hint
+//     than volume=0 that the tab should not be frozen.
+
+let _wakeLock = null;
+async function _acquireWakeLock() {
+  if (!('wakeLock' in navigator) || _wakeLock) return;
+  try {
+    _wakeLock = await navigator.wakeLock.request('screen');
+    _wakeLock.addEventListener('release', () => { _wakeLock = null; });
+  } catch (e) {}
+}
+function _releaseWakeLock() {
+  if (_wakeLock) { _wakeLock.release(); _wakeLock = null; }
+}
+
 let _kaAudio = null;
 function _makeKeepAliveAudio() {
   const buf = new ArrayBuffer(46);
@@ -649,14 +670,16 @@ function _makeKeepAliveAudio() {
   return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
 }
 function _startKeepAlive() {
+  _acquireWakeLock();
   if (_kaAudio) return;
   _kaAudio = new Audio();
   _kaAudio.loop = true;
-  _kaAudio.volume = 0;
+  _kaAudio.volume = 0.001;
   _kaAudio.src = _makeKeepAliveAudio();
   _kaAudio.play().catch(() => {});
 }
 function _stopKeepAlive() {
+  _releaseWakeLock();
   if (!_kaAudio) return;
   _kaAudio.pause();
   URL.revokeObjectURL(_kaAudio.src);
@@ -1117,6 +1140,8 @@ function initControls() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (actx && actx.state === 'suspended') actx.resume();
+  // Re-acquire wake lock — it is automatically released when the screen locks
+  if (S.audioOn) _acquireWakeLock();
   // Force-reconnect the control WS immediately (bypasses exponential backoff)
   if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
     wsRetry = 0;
