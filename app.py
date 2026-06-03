@@ -593,6 +593,7 @@ function openAudioStream(mount) {
   if (actx && actx.state === 'suspended') actx.resume();
   _initWorklet();   // idempotent — guarded by _wNode and _wStarted
   _updateMediaSession(true);
+  _startKeepAlive();
 
   const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
   audWs = new WebSocket(_wsp + '//' + location.host + '/ws/audio');
@@ -620,6 +621,7 @@ function closeAudio() {
   audMount = null;
   if (actx) actx.suspend();
   _updateMediaSession(false);
+  _stopKeepAlive();
 }
 
 function _updateMediaSession(playing) {
@@ -630,6 +632,35 @@ function _updateMediaSession(playing) {
   } else {
     navigator.mediaSession.playbackState = 'paused';
   }
+}
+
+// Silent looping <audio> element — Android Chrome requires an HTMLAudioElement
+// to recognise the tab as having active media, which prevents the renderer from
+// being frozen and WebSocket connections from being dropped on screen lock.
+let _kaAudio = null;
+function _makeKeepAliveAudio() {
+  const buf = new ArrayBuffer(46);
+  const v   = new DataView(buf);
+  const w   = (p, s) => { for (let i = 0; i < s.length; i++) v.setUint8(p + i, s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4, 38, true); w(8,'WAVE');
+  w(12,'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36,'data'); v.setUint32(40, 2, true); v.setInt16(44, 0, true);
+  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+}
+function _startKeepAlive() {
+  if (_kaAudio) return;
+  _kaAudio = new Audio();
+  _kaAudio.loop = true;
+  _kaAudio.volume = 0;
+  _kaAudio.src = _makeKeepAliveAudio();
+  _kaAudio.play().catch(() => {});
+}
+function _stopKeepAlive() {
+  if (!_kaAudio) return;
+  _kaAudio.pause();
+  URL.revokeObjectURL(_kaAudio.src);
+  _kaAudio = null;
 }
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
@@ -1084,7 +1115,19 @@ function initControls() {
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && actx && actx.state === 'suspended') actx.resume();
+  if (document.visibilityState !== 'visible') return;
+  if (actx && actx.state === 'suspended') actx.resume();
+  // Force-reconnect the control WS immediately (bypasses exponential backoff)
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    wsRetry = 0;
+    connect();
+  }
+  // Force-reconnect the audio WS if audio was on and the socket dropped
+  if (S.audioOn && (!audWs || audWs.readyState === WebSocket.CLOSED || audWs.readyState === WebSocket.CLOSING)) {
+    const target = audMount || S.locked || S.playing
+      || (Object.values(S.streams).find(s => s.connected) || {}).mount;
+    if (target) openAudioStream(target);
+  }
 });
 connect();
 initControls();
