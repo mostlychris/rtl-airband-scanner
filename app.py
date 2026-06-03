@@ -514,7 +514,7 @@ function _initAudioGraph() {
   actx.createMediaElementSource(_audEl).connect(audHP);
   _audEl.onerror = () => {
     console.warn('[audio] stream error, retrying in 2 s');
-    setTimeout(() => { if (S.audioOn && _audEl) _audEl.load(); }, 2000);
+    setTimeout(() => { if (S.audioOn && _audEl) { _audEl.load(); _audEl.play().catch(() => {}); } }, 2000);
   };
 }
 
@@ -528,7 +528,12 @@ function openAudioStream(mount) {
   }
   _initAudioGraph();
   if (actx.state === 'suspended') actx.resume();
-  _audEl.play().catch(e => console.error('[audio]', e));
+  _audEl.play().catch(() => {
+    // Autoplay blocked (no prior user gesture) — show the overlay so the
+    // user can tap once to unblock audio.  enableAudio() will call
+    // openAudioStream() again from within a gesture handler.
+    document.getElementById('overlay').classList.remove('hidden');
+  });
   _updateMediaSession(true);
   updateAudioUI();
 }
@@ -542,12 +547,13 @@ function closeAudio() {
 
 function _updateMediaSession(playing) {
   if (!('mediaSession' in navigator)) return;
-  if (playing) {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: 'RTL Scanner' });
-    navigator.mediaSession.playbackState = 'playing';
-  } else {
-    navigator.mediaSession.playbackState = 'paused';
-  }
+  navigator.mediaSession.metadata = new MediaMetadata({ title: 'RTL Scanner' });
+  navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+  // Action handlers are required for Android to fully integrate the tab into
+  // the media system (lock-screen controls, background process priority).
+  navigator.mediaSession.setActionHandler('play',  () => { if (_audEl) _audEl.play(); _updateMediaSession(true); });
+  navigator.mediaSession.setActionHandler('pause', () => { if (_audEl) _audEl.pause(); _updateMediaSession(false); });
+  navigator.mediaSession.setActionHandler('stop',  () => closeAudio());
 }
 
 
@@ -1980,7 +1986,10 @@ async def audio_stream(request: Request):
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    silence = bytes(int(rate * 2 * 0.1))   # 100 ms of zeros
+    # 20 ms of silence — sent continuously when the scanner is quiet so the
+    # <audio> element never stalls.  A stalled element exits "playing" state
+    # and Android stops treating the tab as active media, freezing the renderer.
+    silence = bytes(int(rate * 2 * 0.02))
 
     async def generate():
         yield _wav_header(rate)
@@ -1989,7 +1998,7 @@ async def audio_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    data = await asyncio.wait_for(q.get(), timeout=5.0)
+                    data = await asyncio.wait_for(q.get(), timeout=0.02)
                 except asyncio.TimeoutError:
                     data = silence
                 yield data
