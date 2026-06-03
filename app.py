@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.6.4"
+VERSION    = "2.6.5"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -527,33 +527,40 @@ function _initAudEl() {
   _audEl.src = /Android/i.test(navigator.userAgent) ? '/stream.mp3' : '/stream';
   _audEl.volume = A.vol;
 
-  // Stream error — reload and resume after a short delay.
-  // play() succeeds without a gesture once the user has already granted
-  // autoplay for this session (Chrome tracks user activation per tab).
+  let _retries   = 0;
+  let _stallTimer = null;
+
+  _audEl.addEventListener('playing', () => {
+    _retries = 0;
+    clearTimeout(_stallTimer);
+  });
+
+  // Exponential backoff on stream errors so a persistently broken stream
+  // (e.g. ffmpeg not installed) doesn't spam retries or the overlay.
   _audEl.onerror = () => {
     if (!S.audioOn) return;
-    console.warn('[audio] stream error — reloading in 2 s');
-    setTimeout(_reloadStream, 2000);
+    _retries++;
+    const delay = Math.min(1000 * _retries, 30000);
+    console.warn(`[audio] stream error — retry ${_retries} in ${delay} ms`);
+    setTimeout(_reloadStream, delay);
   };
 
-  // Stalled: browser stopped receiving data (e.g. silence gap too long).
-  // Give it 3 s to recover on its own before forcing a reload.
-  let _stallTimer = null;
+  // Stalled: give the browser 4 s to recover before forcing a reload.
   _audEl.addEventListener('stalled', () => {
     if (!S.audioOn) return;
     clearTimeout(_stallTimer);
-    _stallTimer = setTimeout(_reloadStream, 3000);
+    _stallTimer = setTimeout(_reloadStream, 4000);
   });
-  _audEl.addEventListener('playing', () => clearTimeout(_stallTimer));
 }
 
 function _reloadStream() {
   if (!_audEl || !S.audioOn) return;
   _audEl.load();
-  _audEl.play().catch(() => {
-    // Gesture required again (e.g. after a page wake from deep background).
-    document.getElementById('overlay').classList.remove('hidden');
-  });
+  // Automatic retry — do NOT show the overlay.  If the stream is broken
+  // (e.g. ffmpeg missing) the user will see the spinner; they can tap the
+  // audio button once to retry manually.  The overlay only appears when the
+  // user explicitly tries to enable audio and the browser blocks play().
+  _audEl.play().catch(() => updateAudioUI());
 }
 
 function openAudioStream(mount) {
@@ -897,6 +904,7 @@ function enableAudio() {
   // since the element is already playing.
   _initAudEl();
   _gateGain = 1.0; _applyVolume();
+  _audEl.load();   // clear any error state before playing
   _audEl.play().catch(() => {});
   audMount = audMount
     || S.locked || S.playing
@@ -2025,11 +2033,13 @@ async def api_resume():
 
 @app.get("/debug")
 async def debug():
+    import shutil
     return {
         "connected":     scanner.connected if scanner else None,
         "active_freq":   scanner.active_freq if scanner else None,
         "audio_clients": len(_audio_clients),
         "queue_size":    _evq.qsize() if _evq else -1,
+        "ffmpeg":        shutil.which("ffmpeg") or "NOT FOUND — sudo apt install ffmpeg",
     }
 
 
