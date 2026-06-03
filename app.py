@@ -20,6 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
+VERSION    = "2.6.0"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -400,6 +401,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   </h1>
   <div class="dot" id="wdot"></div>
   <span class="st" id="wst">Connecting…</span>
+  <span class="st" style="opacity:.35;font-size:.7em;margin-left:6px">v""" + VERSION + """</span>
   <div class="spacer"></div>
   <span class="asrc" id="asrc"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
@@ -1856,7 +1858,7 @@ async def _shutdown():
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return PAGE
+    return HTMLResponse(content=PAGE, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/manifest.json")
@@ -1889,14 +1891,14 @@ async def pwa_icon():
 
 @app.get("/sw.js")
 async def service_worker():
-    js = """
+    js = f"""/* v{VERSION} */
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', () => self.clients.claim());
-self.addEventListener('fetch', e => {
+self.addEventListener('fetch', e => {{
   // Let the browser handle the audio stream and WebSocket natively
   if (e.request.url.includes('/stream') || e.request.url.includes('/ws')) return;
-  e.respondWith(fetch(e.request).catch(() => new Response('', {status: 503})));
-});
+  e.respondWith(fetch(e.request).catch(() => new Response('', {{status: 503}})));
+}});
 """
     return Response(content=js, media_type="application/javascript",
                     headers={"Service-Worker-Allowed": "/"})
