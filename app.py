@@ -486,38 +486,41 @@ const A = {
   sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
 };
 let _sqActive = true;   // tracks last squelch state to drive gate transitions
+let _gateRaf  = null;   // requestAnimationFrame handle for squelch-tail fade
+let _gateGain = 1.0;    // 0–1 multiplier applied on top of A.vol
+let audMount  = null;
+let _audEl    = null;   // HTMLAudioElement — plays /stream natively (no AudioContext
+                        // interception) so Android's OS media system sees real audio
 
-let actx     = null;
-let audHP    = null;   // highpass BiquadFilter
-let audLP    = null;   // lowpass BiquadFilter
-let audVol   = null;   // GainNode — master volume
-let audGate  = null;   // GainNode — squelch tail suppression
-let audMount = null;
-let _audEl   = null;   // HTMLAudioElement connected to /stream
+function _applyVolume() {
+  if (_audEl) _audEl.volume = Math.min(1, Math.max(0, A.vol * _gateGain));
+}
 
-function _initAudioGraph() {
-  if (actx) return;
-  actx = new AudioContext({ latencyHint: 'interactive' });
-  audHP = actx.createBiquadFilter();
-  audHP.type = 'highpass';
-  audHP.frequency.value = A.hp || 10;
-  audHP.Q.value = 0.707;
-  audLP = actx.createBiquadFilter();
-  audLP.type = 'lowpass';
-  audLP.frequency.value = A.lp;
-  audLP.Q.value = 0.707;
-  audVol = actx.createGain();
-  audVol.gain.value = A.vol;
-  audGate = actx.createGain();
-  audGate.gain.value = 1.0;
-  audHP.connect(audLP);
-  audLP.connect(audVol);
-  audVol.connect(audGate);
-  audGate.connect(actx.destination);
+function _setGate(open) {
+  if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
+  if (open) {
+    _gateGain = 1.0;
+    _applyVolume();
+  } else {
+    // Ramp volume to 0 over ~50 ms to mute squelch-tail noise
+    const start   = performance.now();
+    const startGain = _gateGain;
+    const RAMP_MS = 50;
+    const step = ts => {
+      _gateGain = Math.max(0, startGain * (1 - (ts - start) / RAMP_MS));
+      _applyVolume();
+      if (_gateGain > 0) _gateRaf = requestAnimationFrame(step);
+      else _gateRaf = null;
+    };
+    _gateRaf = requestAnimationFrame(step);
+  }
+}
 
+function _initAudEl() {
+  if (_audEl) return;
   _audEl = new Audio();
   _audEl.src = '/stream';
-  actx.createMediaElementSource(_audEl).connect(audHP);
+  _audEl.volume = A.vol;
   _audEl.onerror = () => {
     console.warn('[audio] stream error, retrying in 2 s');
     setTimeout(() => { if (S.audioOn && _audEl) { _audEl.load(); _audEl.play().catch(() => {}); } }, 2000);
@@ -526,18 +529,13 @@ function _initAudioGraph() {
 
 function openAudioStream(mount) {
   if (_audEl && !_audEl.paused) return;
-  audMount = mount;
+  audMount  = mount;
   _sqActive = true;
-  if (audGate && actx) {
-    audGate.gain.cancelScheduledValues(actx.currentTime);
-    audGate.gain.value = 1.0;
-  }
-  _initAudioGraph();
-  if (actx.state === 'suspended') actx.resume();
+  _gateGain = 1.0;
+  _initAudEl();
+  _applyVolume();
   _audEl.play().catch(() => {
-    // Autoplay blocked (no prior user gesture) — show the overlay so the
-    // user can tap once to unblock audio.  enableAudio() will call
-    // openAudioStream() again from within a gesture handler.
+    // Autoplay blocked — show overlay so the user can tap to unblock.
     document.getElementById('overlay').classList.remove('hidden');
   });
   _updateMediaSession(true);
@@ -547,7 +545,6 @@ function openAudioStream(mount) {
 function closeAudio() {
   if (_audEl) _audEl.pause();
   audMount = null;
-  if (actx) actx.suspend();
   _updateMediaSession(false);
 }
 
@@ -637,19 +634,8 @@ function onMsg(m) {
     }
     // Squelch tail suppression: gate audio closed on signal drop, open on signal open.
     // Only applied to the currently playing mount so background activity is ignored.
-    if (A.sqtail && audGate && actx && m.mount === (audMount || 'sdr')) {
-      const now = actx.currentTime;
-      if (m.active && !_sqActive) {
-        // Signal opened — ramp up in ~10 ms
-        audGate.gain.cancelScheduledValues(now);
-        audGate.gain.setValueAtTime(audGate.gain.value, now);
-        audGate.gain.linearRampToValueAtTime(1.0, now + 0.01);
-      } else if (!m.active && _sqActive) {
-        // Signal dropped — ramp down in ~50 ms to mute squelch tail noise
-        audGate.gain.cancelScheduledValues(now);
-        audGate.gain.setValueAtTime(audGate.gain.value, now);
-        audGate.gain.linearRampToValueAtTime(0.0, now + 0.05);
-      }
+    if (A.sqtail && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
+      _setGate(m.active);
       _sqActive = m.active;
     }
   } else if (m.type === 'channels_update') {
@@ -980,28 +966,23 @@ function setVol(v) {
   A.vol = v / 100;
   localStorage.setItem('a_vol', A.vol);
   document.getElementById('aVolLbl').textContent = v + '%';
-  if (audVol) audVol.gain.value = A.vol;
+  _applyVolume();
 }
 function setHP(v) {
   A.hp = parseInt(v, 10);
   localStorage.setItem('a_hp', A.hp);
-  if (audHP) audHP.frequency.value = A.hp || 10;
+  // HP filter unavailable without AudioContext interception; setting persisted only.
 }
 function setLP(v) {
   A.lp = parseInt(v, 10);
   localStorage.setItem('a_lp', A.lp);
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
-  if (audLP) audLP.frequency.value = A.lp;
+  // LP filter unavailable without AudioContext interception; setting persisted only.
 }
 function setSqTail(v) {
   A.sqtail = v;
   localStorage.setItem('a_sqtail', v);
-  // Immediately open the gate when disabling suppression; if enabling,
-  // reflect the current signal state.
-  if (audGate && actx) {
-    audGate.gain.cancelScheduledValues(actx.currentTime);
-    audGate.gain.value = (!v || _sqActive) ? 1.0 : 0.0;
-  }
+  if (!v) { _gateGain = 1.0; _applyVolume(); }
 }
 function initControls() {
   const vol = Math.round(A.vol * 100);
@@ -1016,7 +997,6 @@ function initControls() {
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
-  if (actx && actx.state === 'suspended') actx.resume();
   // Force-reconnect the control WS immediately (bypasses exponential backoff)
   if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
     wsRetry = 0;
