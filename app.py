@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.6.3"
+VERSION    = "2.6.4"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -2095,35 +2095,45 @@ async def audio_stream_mp3(request: Request):
         return Response('ffmpeg not found — run: sudo apt install ffmpeg',
                         status_code=503, media_type='text/plain')
 
+    # Shared stop signal — whichever side exits first cancels the other,
+    # preventing _feed from writing to a dead pipe (BrokenPipeError).
+    stop = asyncio.Event()
+
     async def _feed():
         try:
-            while True:
-                if await request.is_disconnected():
-                    break
+            while not stop.is_set():
                 try:
                     data = await asyncio.wait_for(q.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except (asyncio.TimeoutError, asyncio.CancelledError):
                     data = silence
-                proc.stdin.write(data)
-                await proc.stdin.drain()
+                if stop.is_set():
+                    break
+                try:
+                    proc.stdin.write(data)
+                    await proc.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
         except Exception:
             pass
         finally:
+            stop.set()
             try: proc.stdin.close()
             except Exception: pass
             try: _audio_clients.remove(q)
             except ValueError: pass
 
-    asyncio.create_task(_feed())
+    feed_task = asyncio.create_task(_feed())
 
     async def generate():
         try:
-            while True:
+            while not stop.is_set():
                 chunk = await proc.stdout.read(4096)
                 if not chunk:
                     break
                 yield chunk
         finally:
+            stop.set()
+            feed_task.cancel()
             try: proc.kill()
             except Exception: pass
             await proc.wait()
