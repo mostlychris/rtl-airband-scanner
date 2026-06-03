@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.6.0"
+VERSION    = "2.6.1"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -1992,25 +1992,6 @@ async def debug():
     }
 
 
-@app.websocket("/ws/audio")
-async def audio_ws(ws: WebSocket):
-    await ws.accept()
-    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
-    _audio_clients.append(q)
-    try:
-        while True:
-            try:
-                data = await asyncio.wait_for(q.get(), timeout=5.0)
-            except asyncio.TimeoutError:
-                rate = scanner.audio_rate if scanner else AUDIO_RATE
-                data = bytes(int(rate * 2 * 0.1))   # 100 ms silence keepalive
-            await ws.send_bytes(data)
-    except (WebSocketDisconnect, Exception):
-        pass
-    finally:
-        try: _audio_clients.remove(q)
-        except ValueError: pass
-
 
 @app.get("/stream")
 async def audio_stream(request: Request):
@@ -2019,10 +2000,12 @@ async def audio_stream(request: Request):
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    # 20 ms of silence — sent continuously when the scanner is quiet so the
-    # <audio> element never stalls.  A stalled element exits "playing" state
-    # and Android stops treating the tab as active media, freezing the renderer.
-    silence = bytes(int(rate * 2 * 0.02))
+    # Send up to 1 s of silence when the queue is empty (squelch closed / no
+    # signal).  1 s is long enough that the <audio> element never stalls, and
+    # short enough that real audio chunks — which arrive every ~250 ms when the
+    # scanner is transmitting — always beat the timeout and no silence is
+    # injected mid-transmission.
+    silence = bytes(int(rate * 2 * 0.5))   # 500 ms
 
     async def generate():
         yield _wav_header(rate)
@@ -2031,7 +2014,7 @@ async def audio_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    data = await asyncio.wait_for(q.get(), timeout=0.02)
+                    data = await asyncio.wait_for(q.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     data = silence
                 yield data
