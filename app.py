@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.6.5"
+VERSION    = "2.6.6"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -904,7 +904,7 @@ function enableAudio() {
   // since the element is already playing.
   _initAudEl();
   _gateGain = 1.0; _applyVolume();
-  _audEl.load();   // clear any error state before playing
+  if (_audEl.error) _audEl.load();  // only reset on actual error, not just paused
   _audEl.play().catch(() => {});
   audMount = audMount
     || S.locked || S.playing
@@ -2088,11 +2088,14 @@ async def audio_stream_mp3(request: Request):
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    silence = bytes(int(rate * 2 * 0.5))
+    # 100 ms chunks — short enough to keep the encoder pipeline warm between
+    # real audio bursts without injecting audible gaps mid-transmission.
+    silence = bytes(int(rate * 2 * 0.1))
 
     try:
         proc = await asyncio.create_subprocess_exec(
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-fflags', '+flush_packets',          # flush output after every frame
             '-f', 's16le', '-ar', str(rate), '-ac', '1', '-i', 'pipe:0',
             '-c:a', 'libmp3lame', '-b:a', '32k', '-f', 'mp3', 'pipe:1',
             stdin=asyncio.subprocess.PIPE,
@@ -2110,10 +2113,18 @@ async def audio_stream_mp3(request: Request):
     stop = asyncio.Event()
 
     async def _feed():
+        # Prime ffmpeg with one silence chunk immediately so it starts
+        # producing MP3 frames before the browser calls play().
+        try:
+            proc.stdin.write(silence)
+            await proc.stdin.drain()
+        except (BrokenPipeError, OSError):
+            stop.set()
+            return
         try:
             while not stop.is_set():
                 try:
-                    data = await asyncio.wait_for(q.get(), timeout=1.0)
+                    data = await asyncio.wait_for(q.get(), timeout=0.1)
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     data = silence
                 if stop.is_set():
