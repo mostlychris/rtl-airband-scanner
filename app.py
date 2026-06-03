@@ -573,8 +573,8 @@ async function _mseConnect() {
 
   _mseAbort = new AbortController();
 
-  const TARGET_LAG = 0.5;   // seconds behind live edge to target
-  const MAX_LAG    = 1.5;   // seconds; seek forward if drift exceeds this
+  const TARGET_LAG = 2.0;   // seconds behind live edge to target after a seek
+  const MAX_LAG    = 5.0;   // seconds; seek only if genuinely far behind
 
   // On first canplay, jump to the live edge so we don't start playing content
   // that was buffered while the encoder was warming up (which would be 3–10 s
@@ -582,16 +582,22 @@ async function _mseConnect() {
   let _jumped = false;
   const _jumpToLive = () => {
     if (_jumped || !sb || !sb.buffered.length) return;
-    _jumped = true;
     const liveEdge = sb.buffered.end(sb.buffered.length - 1);
+    // Only jump if the buffer is deep enough to land TARGET_LAG behind live
+    // and still have data to play — otherwise Chrome immediately hits waiting.
+    if (liveEdge < TARGET_LAG + 0.5) return;
+    _jumped = true;
     try { _audEl.currentTime = Math.max(0, liveEdge - TARGET_LAG); } catch (_) {}
   };
   _audEl.addEventListener('canplay', _jumpToLive, { once: true });
 
-  // Ongoing watchdog: if playhead drifts more than MAX_LAG behind the live
-  // edge (e.g. after a CPU stall or Chrome background throttle), seek forward.
+  // Ongoing watchdog: seek forward only when genuinely far behind AND Chrome
+  // is actively playing (readyState 4 = HAVE_ENOUGH_DATA).  Skipping the seek
+  // when readyState < 4 avoids a seek→waiting→lag-grows→seek loop where the
+  // watchdog fires repeatedly while Chrome is already buffering at the live edge.
   const _watchdog = setInterval(() => {
     if (!sb || !_audEl || _audEl.paused) return;
+    if (_audEl.readyState < 4) return;   // already buffering; don't pile on seeks
     if (!sb.buffered.length) return;
     const liveEdge = sb.buffered.end(sb.buffered.length - 1);
     if (liveEdge - _audEl.currentTime > MAX_LAG) {
