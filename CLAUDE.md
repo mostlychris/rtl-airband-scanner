@@ -14,7 +14,7 @@ python3 app.py --debug                  # log every chunk: freq, dB, squelch sta
 ## Dependencies
 
 ```bash
-sudo apt install rtl-sdr python3-numpy
+sudo apt install rtl-sdr python3-numpy ffmpeg
 pip install fastapi "uvicorn[standard]" pyrtlsdr scipy
 ```
 

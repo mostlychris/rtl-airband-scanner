@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.6.2"
+VERSION    = "2.6.3"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -521,7 +521,10 @@ function _setGate(open) {
 function _initAudEl() {
   if (_audEl) return;
   _audEl = new Audio();
-  _audEl.src = '/stream';
+  // Android's Doze mode blocks WAV streams after ~5 min of silence.
+  // MP3 via /stream.mp3 is treated as native radio media, surviving Doze
+  // with a proper foreground service.  PC browsers keep the WAV stream.
+  _audEl.src = /Android/i.test(navigator.userAgent) ? '/stream.mp3' : '/stream';
   _audEl.volume = A.vol;
 
   // Stream error — reload and resume after a short delay.
@@ -2064,6 +2067,71 @@ async def audio_stream(request: Request):
         generate(),
         media_type="audio/wav",
         headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/stream.mp3")
+async def audio_stream_mp3(request: Request):
+    """MP3 stream for Android — ffmpeg encodes PCM to MP3 so Android's media
+    stack treats the tab as a radio app, surviving Doze mode indefinitely.
+    Requires: sudo apt install ffmpeg"""
+    rate = scanner.audio_rate if scanner else AUDIO_RATE
+    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
+    _audio_clients.append(q)
+    silence = bytes(int(rate * 2 * 0.5))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-f', 's16le', '-ar', str(rate), '-ac', '1', '-i', 'pipe:0',
+            '-c:a', 'libmp3lame', '-b:a', '32k', '-f', 'mp3', 'pipe:1',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        try: _audio_clients.remove(q)
+        except ValueError: pass
+        return Response('ffmpeg not found — run: sudo apt install ffmpeg',
+                        status_code=503, media_type='text/plain')
+
+    async def _feed():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    data = silence
+                proc.stdin.write(data)
+                await proc.stdin.drain()
+        except Exception:
+            pass
+        finally:
+            try: proc.stdin.close()
+            except Exception: pass
+            try: _audio_clients.remove(q)
+            except ValueError: pass
+
+    asyncio.create_task(_feed())
+
+    async def generate():
+        try:
+            while True:
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            try: proc.kill()
+            except Exception: pass
+            await proc.wait()
+
+    return StreamingResponse(
+        generate(),
+        media_type='audio/mpeg',
+        headers={'Cache-Control': 'no-cache'},
     )
 
 
