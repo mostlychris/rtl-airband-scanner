@@ -18,7 +18,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
@@ -95,6 +95,12 @@ PAGE = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a0d0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>SDR Scanner</title>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
@@ -1021,6 +1027,7 @@ document.addEventListener('visibilitychange', () => {
     _audEl.play().catch(() => {});
   }
 });
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 connect();
 initControls();
 if (!S.audioOn) setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
@@ -1870,6 +1877,49 @@ async def _shutdown():
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return PAGE
+
+
+@app.get("/manifest.json")
+async def pwa_manifest():
+    name = (scanner.name if scanner else None) or "RTL Scanner"
+    return JSONResponse({
+        "name": name,
+        "short_name": name[:15],
+        "display": "standalone",
+        "start_url": "/",
+        "background_color": "#0a0d0f",
+        "theme_color": "#0a0d0f",
+        "icons": [
+            {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"},
+        ],
+    })
+
+
+@app.get("/icon.svg")
+async def pwa_icon():
+    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#0a0d0f"/>
+  <circle cx="256" cy="296" r="18" fill="#2dff6e"/>
+  <path d="M196 256 a80 80 0 0 1 120 0" fill="none" stroke="#2dff6e" stroke-width="18" stroke-linecap="round"/>
+  <path d="M158 218 a130 130 0 0 1 196 0" fill="none" stroke="#2dff6e" stroke-width="14" stroke-linecap="round" opacity=".65"/>
+  <path d="M118 180 a182 182 0 0 1 276 0" fill="none" stroke="#2dff6e" stroke-width="10" stroke-linecap="round" opacity=".35"/>
+</svg>"""
+    return Response(content=svg, media_type="image/svg+xml")
+
+
+@app.get("/sw.js")
+async def service_worker():
+    js = """
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', () => self.clients.claim());
+self.addEventListener('fetch', e => {
+  // Let the browser handle the audio stream and WebSocket natively
+  if (e.request.url.includes('/stream') || e.request.url.includes('/ws')) return;
+  e.respondWith(fetch(e.request).catch(() => new Response('', {status: 503})));
+});
+"""
+    return Response(content=js, media_type="application/javascript",
+                    headers={"Service-Worker-Allowed": "/"})
 
 
 @app.put("/api/channel")
