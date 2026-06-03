@@ -11,16 +11,28 @@ Install:
 """
 from __future__ import annotations
 
-import json, asyncio, threading, argparse, uvicorn
+import json, asyncio, threading, argparse, uvicorn, struct
 import numpy as np
 from scipy.signal import lfilter, firwin
 from pathlib import Path
 from datetime import datetime
 from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
+
+
+def _wav_header(sample_rate: int = AUDIO_RATE) -> bytes:
+    """WAV header for a streaming (infinite-length) 16-bit mono PCM stream."""
+    byte_rate = sample_rate * 2
+    return (
+        b'RIFF' + struct.pack('<I', 0xFFFFFFFF) +
+        b'WAVE' +
+        b'fmt ' + struct.pack('<IHHIIHH', 16, 1, 1, sample_rate, byte_rate, 2, 16) +
+        b'data' + struct.pack('<I', 0xFFFFFFFF)
+    )
+
 
 # ── CTCSS (PL tone) detection ──────────────────────────────────────────────────
 _CTCSS_TONES = [
@@ -449,66 +461,16 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Audio (Web Audio API — AudioWorklet ring buffer) ───────────────────────────
+// ── Audio (HTTP stream → HTMLAudioElement → Web Audio filter chain) ────────────
 //
-// The worklet runs in the browser's audio rendering thread and pulls 128 samples
-// per render quantum from an internal ring buffer, completely decoupled from
-// WebSocket delivery timing.  Linear resampling handles any AudioContext sample
-// rate so no sampleRate constraint is imposed on the AudioContext constructor.
-const WORKLET_SRC = `
-class PCMRingProcessor extends AudioWorkletProcessor {
-  constructor(options) {
-    super();
-    this._SIZE   = 96000;
-    this._ring   = new Float32Array(this._SIZE);
-    this._wp     = 0;
-    this._rp     = 0.0;    // float for sub-sample interpolation
-    this._ratio  = (options.processorOptions.inRate || 24000) / sampleRate;
-    // Prime threshold: accumulate 250 ms of source audio before playing.
-    // This creates a standing cushion so chunk-boundary jitter never
-    // causes the ring to underrun mid-transmission.
-    this._PRIME  = Math.round((options.processorOptions.inRate || 24000) * 0.25);
-    this._primed = false;
-    this.port.onmessage = ({ data }) => {
-      const n     = data.length;
-      const avail = this._wp - Math.floor(this._rp);
-      if (n > this._SIZE - avail) this._rp = this._wp - this._SIZE + n;
-      const base = this._wp;
-      for (let i = 0; i < n; i++)
-        this._ring[(base + i) % this._SIZE] = data[i];
-      this._wp += n;
-    };
-  }
-  process(inputs, outputs) {
-    const out   = outputs[0][0];
-    const avail = this._wp - Math.floor(this._rp);
-    // Hold silence until the ring has a full cushion.  Re-prime after any
-    // complete drain so a gap in transmission resets the buffer cleanly.
-    if (!this._primed) {
-      if (avail >= this._PRIME) this._primed = true;
-      else { out.fill(0); return true; }
-    }
-    const ratio = this._ratio;
-    const need  = Math.ceil(out.length * ratio) + 1;
-    if (avail >= need) {
-      for (let i = 0; i < out.length; i++) {
-        const pos = this._rp + i * ratio;
-        const lo  = Math.floor(pos);
-        const hi  = lo + 1;
-        const t   = pos - lo;
-        out[i]    = this._ring[lo % this._SIZE] * (1 - t) +
-                    this._ring[hi % this._SIZE] * t;
-      }
-      this._rp += out.length * ratio;
-    } else {
-      out.fill(0);
-      if (avail === 0) this._primed = false;  // re-prime after complete drain
-    }
-    return true;
-  }
-}
-registerProcessor('pcm-ring', PCMRingProcessor);
-`;
+// The browser fetches /stream (a never-ending WAV) via a plain <audio> element.
+// Android's media system treats HTMLAudioElement playback as native media, which
+// keeps the renderer alive and WebSockets open through screen lock — the same
+// mechanism used by apps like Rdio Scanner.
+//
+// createMediaElementSource() routes the element's output through the Web Audio
+// graph so the HP/LP filters, volume, and squelch-tail gate all still apply.
+// Graph: <audio src=/stream> → MediaElementSource → HP → LP → Vol → Gate → out
 
 // ── Audio settings (persisted in localStorage) ────────────────────────────────
 const A = {
@@ -519,109 +481,63 @@ const A = {
 };
 let _sqActive = true;   // tracks last squelch state to drive gate transitions
 
-let PCM_RATE  = 24000;
-let actx      = null;
-let audHP     = null;   // highpass BiquadFilter
-let audLP     = null;   // lowpass BiquadFilter
-let audVol    = null;   // GainNode — master volume
-let audGate   = null;   // GainNode — squelch tail suppression
-let audWs     = null;
-let audMount  = null;
-let _wNode    = null;
-let _wStarted = false;
+let actx     = null;
+let audHP    = null;   // highpass BiquadFilter
+let audLP    = null;   // lowpass BiquadFilter
+let audVol   = null;   // GainNode — master volume
+let audGate  = null;   // GainNode — squelch tail suppression
+let audMount = null;
+let _audEl   = null;   // HTMLAudioElement connected to /stream
 
-async function _initWorklet() {
-  if (_wNode || _wStarted) return;
-  _wStarted = true;
-  try {
-    if (!actx) {
-      // No sampleRate constraint — worklet resamples from PCM_RATE to context rate.
-      // Graph: worklet → HP filter → LP filter → Volume → Gate → destination
-      actx   = new AudioContext({ latencyHint: 'interactive' });
-      audHP  = actx.createBiquadFilter();
-      audHP.type = 'highpass';
-      audHP.frequency.value = A.hp || 10;  // 10 Hz ≈ bypass when HP is Off
-      audHP.Q.value = 0.707;
-      audLP  = actx.createBiquadFilter();
-      audLP.type = 'lowpass';
-      audLP.frequency.value = A.lp;
-      audLP.Q.value = 0.707;
-      audVol  = actx.createGain();
-      audVol.gain.value = A.vol;
-      audGate = actx.createGain();
-      audGate.gain.value = 1.0;
-      audHP.connect(audLP);
-      audLP.connect(audVol);
-      audVol.connect(audGate);
-      audGate.connect(actx.destination);
-    }
-    if (!actx.audioWorklet) {
-      // AudioWorklet requires a secure context (HTTPS or localhost).
-      // On plain HTTP with a LAN IP, Chrome/Firefox disable it.
-      throw new Error('AudioWorklet unavailable — serve over HTTPS or via localhost tunnel');
-    }
-    const blob = new Blob([WORKLET_SRC], { type: 'application/javascript' });
-    const burl = URL.createObjectURL(blob);
-    try   { await actx.audioWorklet.addModule(burl); }
-    finally { URL.revokeObjectURL(burl); }
-    _wNode = new AudioWorkletNode(actx, 'pcm-ring', {
-      outputChannelCount: [1],
-      processorOptions: { inRate: PCM_RATE },
-    });
-    _wNode.connect(audHP);
-    console.log('[audio] worklet ready — context rate', actx.sampleRate,
-                'Hz, PCM rate', PCM_RATE, 'Hz, ratio', (PCM_RATE / actx.sampleRate).toFixed(4));
-  } catch (e) {
-    console.error('[audio] worklet init failed:', e.message);
-    _wStarted = false;   // allow retry on next openAudioStream call
-  }
+function _initAudioGraph() {
+  if (actx) return;
+  actx = new AudioContext({ latencyHint: 'interactive' });
+  audHP = actx.createBiquadFilter();
+  audHP.type = 'highpass';
+  audHP.frequency.value = A.hp || 10;
+  audHP.Q.value = 0.707;
+  audLP = actx.createBiquadFilter();
+  audLP.type = 'lowpass';
+  audLP.frequency.value = A.lp;
+  audLP.Q.value = 0.707;
+  audVol = actx.createGain();
+  audVol.gain.value = A.vol;
+  audGate = actx.createGain();
+  audGate.gain.value = 1.0;
+  audHP.connect(audLP);
+  audLP.connect(audVol);
+  audVol.connect(audGate);
+  audGate.connect(actx.destination);
+
+  _audEl = new Audio();
+  _audEl.src = '/stream';
+  actx.createMediaElementSource(_audEl).connect(audHP);
+  _audEl.onerror = () => {
+    console.warn('[audio] stream error, retrying in 2 s');
+    setTimeout(() => { if (S.audioOn && _audEl) _audEl.load(); }, 2000);
+  };
 }
 
 function openAudioStream(mount) {
-  // Guard against CONNECTING as well as OPEN to prevent duplicate sockets
-  if (audWs && (audWs.readyState === WebSocket.OPEN ||
-                audWs.readyState === WebSocket.CONNECTING)) return;
-  if (audWs) { audWs.close(); audWs = null; }
+  if (_audEl && !_audEl.paused) return;
   audMount = mount;
-  // Reset squelch gate to open on every new stream start so we never
-  // get stuck silent if the gate was closed when audio was last stopped.
   _sqActive = true;
   if (audGate && actx) {
     audGate.gain.cancelScheduledValues(actx.currentTime);
     audGate.gain.value = 1.0;
   }
-  if (actx && actx.state === 'suspended') actx.resume();
-  _initWorklet();   // idempotent — guarded by _wNode and _wStarted
+  _initAudioGraph();
+  if (actx.state === 'suspended') actx.resume();
+  _audEl.play().catch(e => console.error('[audio]', e));
   _updateMediaSession(true);
-  _startKeepAlive();
-
-  const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  audWs = new WebSocket(_wsp + '//' + location.host + '/ws/audio');
-  audWs.binaryType = 'arraybuffer';
-  audWs.onopen  = () => updateAudioUI();
-  audWs.onerror = () => {};
-  audWs.onclose = () => {
-    const m = audMount;
-    audMount = null; updateAudioUI();
-    if (S.audioOn && m) setTimeout(() => { if (S.audioOn) openAudioStream(m); }, 2000);
-  };
-  audWs.onmessage = ({ data }) => {
-    if (!_wNode || !actx) return;
-    if (actx.state === 'suspended') { actx.resume(); return; }
-    if (actx.state !== 'running') return;
-    const s16 = new Int16Array(data);
-    const f32 = new Float32Array(s16.length);
-    for (let i = 0; i < s16.length; i++) f32[i] = s16[i] / 32768;
-    _wNode.port.postMessage(f32, [f32.buffer]);
-  };
+  updateAudioUI();
 }
 
 function closeAudio() {
-  if (audWs) { audWs.close(); audWs = null; }
+  if (_audEl) _audEl.pause();
   audMount = null;
   if (actx) actx.suspend();
   _updateMediaSession(false);
-  _stopKeepAlive();
 }
 
 function _updateMediaSession(playing) {
@@ -634,57 +550,6 @@ function _updateMediaSession(playing) {
   }
 }
 
-// ── Background-audio keep-alive ────────────────────────────────────────────────
-// Two mechanisms work together to prevent Android Chrome from freezing the
-// renderer (and dropping WebSockets) while the screen is off:
-//
-//  1. Screen Wake Lock: keeps the screen on while audio is enabled, so the
-//     auto-lock timeout never fires and Chrome stays fully active.
-//     Re-acquired on each visibilitychange (lock releases it automatically).
-//
-//  2. Near-silent HTMLAudioElement loop: volume 0.001 is inaudible but
-//     non-zero, which Chrome counts as active audio output — a stronger hint
-//     than volume=0 that the tab should not be frozen.
-
-let _wakeLock = null;
-async function _acquireWakeLock() {
-  if (!('wakeLock' in navigator) || _wakeLock) return;
-  try {
-    _wakeLock = await navigator.wakeLock.request('screen');
-    _wakeLock.addEventListener('release', () => { _wakeLock = null; });
-  } catch (e) {}
-}
-function _releaseWakeLock() {
-  if (_wakeLock) { _wakeLock.release(); _wakeLock = null; }
-}
-
-let _kaAudio = null;
-function _makeKeepAliveAudio() {
-  const buf = new ArrayBuffer(46);
-  const v   = new DataView(buf);
-  const w   = (p, s) => { for (let i = 0; i < s.length; i++) v.setUint8(p + i, s.charCodeAt(i)); };
-  w(0,'RIFF'); v.setUint32(4, 38, true); w(8,'WAVE');
-  w(12,'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, 8000, true); v.setUint32(28, 16000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  w(36,'data'); v.setUint32(40, 2, true); v.setInt16(44, 0, true);
-  return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
-}
-function _startKeepAlive() {
-  _acquireWakeLock();
-  if (_kaAudio) return;
-  _kaAudio = new Audio();
-  _kaAudio.loop = true;
-  _kaAudio.volume = 0.001;
-  _kaAudio.src = _makeKeepAliveAudio();
-  _kaAudio.play().catch(() => {});
-}
-function _stopKeepAlive() {
-  _releaseWakeLock();
-  if (!_kaAudio) return;
-  _kaAudio.pause();
-  URL.revokeObjectURL(_kaAudio.src);
-  _kaAudio = null;
-}
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
 function connect() {
@@ -702,7 +567,7 @@ function setWsSt(ok) {
 // ── Message handler ────────────────────────────────────────────────────────────
 function onMsg(m) {
   if (m.type === 'state') {
-    if (m.audio_rate) PCM_RATE = m.audio_rate;
+
     m.streams.forEach(s => {
       s.channelSquelch = s.channelSquelch || {};
       s.channelGain    = s.channelGain    || {};
@@ -1009,7 +874,7 @@ function updateAudioUI() {
   document.getElementById('acontrols').classList.toggle('hidden', !S.audioOn);
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
-  const connected = audWs && audWs.readyState === WebSocket.OPEN;
+  const connected = _audEl && !_audEl.paused;
   if (S.audioOn) {
     const s = audMount ? S.streams[audMount] : null;
     btn.className = 'abtn on';
@@ -1140,18 +1005,14 @@ function initControls() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') return;
   if (actx && actx.state === 'suspended') actx.resume();
-  // Re-acquire wake lock — it is automatically released when the screen locks
-  if (S.audioOn) _acquireWakeLock();
   // Force-reconnect the control WS immediately (bypasses exponential backoff)
   if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
     wsRetry = 0;
     connect();
   }
-  // Force-reconnect the audio WS if audio was on and the socket dropped
-  if (S.audioOn && (!audWs || audWs.readyState === WebSocket.CLOSED || audWs.readyState === WebSocket.CLOSING)) {
-    const target = audMount || S.locked || S.playing
-      || (Object.values(S.streams).find(s => s.connected) || {}).mount;
-    if (target) openAudioStream(target);
+  // Resume the audio element if it was paused while locked
+  if (S.audioOn && _audEl && _audEl.paused) {
+    _audEl.play().catch(() => {});
   }
 });
 connect();
@@ -2110,6 +1971,37 @@ async def audio_ws(ws: WebSocket):
     finally:
         try: _audio_clients.remove(q)
         except ValueError: pass
+
+
+@app.get("/stream")
+async def audio_stream(request: Request):
+    """HTTP audio stream — serves a never-ending WAV so browsers treat the
+    tab as native media (required for background playback on Android)."""
+    rate = scanner.audio_rate if scanner else AUDIO_RATE
+    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
+    _audio_clients.append(q)
+    silence = bytes(int(rate * 2 * 0.1))   # 100 ms of zeros
+
+    async def generate():
+        yield _wav_header(rate)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    data = silence
+                yield data
+        finally:
+            try: _audio_clients.remove(q)
+            except ValueError: pass
+
+    return StreamingResponse(
+        generate(),
+        media_type="audio/wav",
+        headers={"Cache-Control": "no-cache", "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.websocket("/ws")
