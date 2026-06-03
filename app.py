@@ -592,6 +592,7 @@ function openAudioStream(mount) {
   }
   if (actx && actx.state === 'suspended') actx.resume();
   _initWorklet();   // idempotent — guarded by _wNode and _wStarted
+  _updateMediaSession(true);
 
   const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
   audWs = new WebSocket(_wsp + '//' + location.host + '/ws/audio');
@@ -618,6 +619,17 @@ function closeAudio() {
   if (audWs) { audWs.close(); audWs = null; }
   audMount = null;
   if (actx) actx.suspend();
+  _updateMediaSession(false);
+}
+
+function _updateMediaSession(playing) {
+  if (!('mediaSession' in navigator)) return;
+  if (playing) {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'RTL Scanner' });
+    navigator.mediaSession.playbackState = 'playing';
+  } else {
+    navigator.mediaSession.playbackState = 'paused';
+  }
 }
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
@@ -1071,6 +1083,9 @@ function initControls() {
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && actx && actx.state === 'suspended') actx.resume();
+});
 connect();
 initControls();
 if (!S.audioOn) setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
