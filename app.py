@@ -752,11 +752,35 @@ function _updateMediaSession(playing) {
 
 
 // ── WebSocket (control) ────────────────────────────────────────────────────────
+let _wsPingTimer = null;
+
 function connect() {
   const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(_wsp + '//' + location.host + '/ws');
-  ws.onopen  = () => { wsRetry=0; setWsSt(true); };
-  ws.onclose = () => { setWsSt(false); setTimeout(connect, Math.min(2000*(++wsRetry),15000)); };
+  ws.onopen = () => {
+    wsRetry = 0;
+    setWsSt(true);
+    // Send a client-side ping every 20 s.  This creates outgoing traffic from
+    // the device, which is critical for two reasons:
+    //   1. Android's network stack tracks outgoing packets to decide if a
+    //      connection is active — incoming-only traffic can still be flagged
+    //      as idle and have the TCP flow restricted.
+    //   2. NAT entries on home routers typically require bidirectional traffic
+    //      to stay alive; an entry with only server→client traffic can expire.
+    // The server already pings every 15 s (server→client); this adds the
+    // client→server direction to complete the bidirectional keepalive.
+    clearInterval(_wsPingTimer);
+    _wsPingTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({type: 'ping'}));
+    }, 20000);
+  };
+  ws.onclose = () => {
+    clearInterval(_wsPingTimer);
+    _wsPingTimer = null;
+    setWsSt(false);
+    setTimeout(connect, Math.min(2000 * (++wsRetry), 15000));
+  };
   ws.onmessage = e => onMsg(JSON.parse(e.data));
 }
 function setWsSt(ok) {
@@ -2600,8 +2624,10 @@ async def ws_endpoint(ws: WebSocket):
     await wsman.connect(ws)
 
     async def _keepalive():
+        # 15 s interval keeps well under nginx's default proxy_read_timeout of
+        # 60 s even if the asyncio event loop is briefly busy.
         while True:
-            await asyncio.sleep(25)
+            await asyncio.sleep(15)
             try: await ws.send_text(json.dumps({"type": "ping"}))
             except Exception: return
 
