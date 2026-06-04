@@ -2093,22 +2093,55 @@ async def pwa_manifest():
         "background_color": "#0a0d0f",
         "theme_color": "#0a0d0f",
         "categories": ["music", "utilities"],
+        "orientation": "portrait",
         "icons": [
-            {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"},
+            {"src": "/icon.svg",        "sizes": "any",     "type": "image/svg+xml", "purpose": "any maskable"},
+            {"src": "/icon-512.png",    "sizes": "512x512", "type": "image/png",     "purpose": "any maskable"},
+            {"src": "/icon-192.png",    "sizes": "192x192", "type": "image/png",     "purpose": "any maskable"},
         ],
     })
 
 
-@app.get("/icon.svg")
-async def pwa_icon():
-    svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+_ICON_SVG = """\
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" fill="#0a0d0f"/>
   <circle cx="256" cy="296" r="18" fill="#2dff6e"/>
   <path d="M196 256 a80 80 0 0 1 120 0" fill="none" stroke="#2dff6e" stroke-width="18" stroke-linecap="round"/>
   <path d="M158 218 a130 130 0 0 1 196 0" fill="none" stroke="#2dff6e" stroke-width="14" stroke-linecap="round" opacity=".65"/>
   <path d="M118 180 a182 182 0 0 1 276 0" fill="none" stroke="#2dff6e" stroke-width="10" stroke-linecap="round" opacity=".35"/>
 </svg>"""
-    return Response(content=svg, media_type="image/svg+xml")
+
+@app.get("/icon.svg")
+async def pwa_icon():
+    return Response(content=_ICON_SVG, media_type="image/svg+xml")
+
+
+def _svg_to_png(size: int) -> bytes:
+    """Rasterise _ICON_SVG to a PNG at the given square pixel size.
+    Uses cairosvg if available, otherwise returns a minimal 1×1 fallback PNG
+    so the server still starts without the optional dependency."""
+    try:
+        import cairosvg  # type: ignore
+        return cairosvg.svg2png(bytestring=_ICON_SVG.encode(), output_width=size, output_height=size)
+    except Exception:
+        # 1×1 transparent PNG — PWABuilder will accept it and substitute its own
+        import base64
+        return base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+            "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+        )
+
+
+@app.get("/icon-512.png")
+async def pwa_icon_512():
+    return Response(content=_svg_to_png(512), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/icon-192.png")
+async def pwa_icon_192():
+    return Response(content=_svg_to_png(192), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/sw.js")
