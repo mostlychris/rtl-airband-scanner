@@ -774,15 +774,12 @@ function connect() {
     _wsPingTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({type: 'ping'}));
-    }, 20000);
+    }, 15000);
   };
   ws.onclose = (e) => {
     clearInterval(_wsPingTimer);
     _wsPingTimer = null;
     setWsSt(false);
-    // Show disconnect info directly in the UI (visible in the TWA without DevTools)
-    // code 1000=normal, 1001=going away, 1006=abnormal/network drop,
-    // 1011=server error, 1012=server restart
     const ts  = new Date().toLocaleTimeString();
     const why = e.reason || '';
     const log = document.getElementById('wslog');
@@ -791,7 +788,13 @@ function connect() {
       log.style.display = '';
     }
     console.warn('[ws] closed code:', e.code, 'clean:', e.wasClean, 'reason:', why);
-    setTimeout(connect, Math.min(2000 * (++wsRetry), 15000));
+    // 1006 = TCP killed by Android network stack (WiFi power-save).
+    // Reconnect immediately on the first attempt so the user sees at most a
+    // flash of red; only back off if the server itself is unreachable.
+    wsRetry++;
+    const delay = (e.code === 1006 && wsRetry <= 3) ? 0
+                : Math.min(1000 * wsRetry, 15000);
+    setTimeout(connect, delay);
   };
   ws.onmessage = e => onMsg(JSON.parse(e.data));
 }
@@ -2660,13 +2663,13 @@ async def ws_endpoint(ws: WebSocket):
     await wsman.connect(ws)
 
     async def _keepalive():
-        # 15 s interval keeps well under nginx's default proxy_read_timeout of
-        # 60 s even if the asyncio event loop is briefly busy.
+        # 10 s interval — tight enough that Android's WiFi power-save has less
+        # opportunity to declare the connection idle between heartbeats.
         # Uses wsman.send_one() so the ping is serialised with broadcast sends
         # via the per-socket lock — prevents concurrent writes on the same WS.
         ping = json.dumps({"type": "ping"})
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(10)
             if not await wsman.send_one(ws, ping):
                 return
 
