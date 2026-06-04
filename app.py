@@ -2082,22 +2082,24 @@ async def index():
 
 
 @app.get("/manifest.json")
-async def pwa_manifest():
-    name = (scanner.name if scanner else None) or "RTL Scanner"
+async def pwa_manifest(request: Request):
+    name   = (scanner.name if scanner else None) or "RTL Scanner"
+    origin = str(request.base_url).rstrip('/')
     return JSONResponse({
         "name": name,
         "short_name": name[:15],
         "display": "standalone",
         "display_override": ["standalone", "minimal-ui"],
         "start_url": "/",
+        "scope": "/",
         "background_color": "#0a0d0f",
         "theme_color": "#0a0d0f",
         "categories": ["music", "utilities"],
         "orientation": "portrait",
         "icons": [
-            {"src": "/icon.svg",        "sizes": "any",     "type": "image/svg+xml", "purpose": "any maskable"},
-            {"src": "/icon-512.png",    "sizes": "512x512", "type": "image/png",     "purpose": "any maskable"},
-            {"src": "/icon-192.png",    "sizes": "192x192", "type": "image/png",     "purpose": "any maskable"},
+            {"src": f"{origin}/icon.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "any maskable"},
+            {"src": f"{origin}/icon-512.png", "sizes": "512x512", "type": "image/png",     "purpose": "any maskable"},
+            {"src": f"{origin}/icon-192.png", "sizes": "192x192", "type": "image/png",     "purpose": "any maskable"},
         ],
     })
 
