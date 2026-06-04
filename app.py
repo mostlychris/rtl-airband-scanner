@@ -2118,31 +2118,74 @@ async def pwa_icon():
     return Response(content=_ICON_SVG, media_type="image/svg+xml")
 
 
-def _svg_to_png(size: int) -> bytes:
-    """Rasterise _ICON_SVG to a PNG at the given square pixel size.
-    Uses cairosvg if available, otherwise returns a minimal 1×1 fallback PNG
-    so the server still starts without the optional dependency."""
-    try:
-        import cairosvg  # type: ignore
-        return cairosvg.svg2png(bytestring=_ICON_SVG.encode(), output_width=size, output_height=size)
-    except Exception:
-        # 1×1 transparent PNG — PWABuilder will accept it and substitute its own
-        import base64
-        return base64.b64decode(
-            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
-            "YPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
-        )
+def _make_icon_png(size: int) -> bytes:
+    """Render the scanner icon as a PNG using only numpy + zlib (no cairosvg).
 
+    Reproduces the SVG: dark background, green centre dot, three concentric
+    arc segments opening upward (radio-wave motif).
+    """
+    import zlib, struct
+
+    img = np.full((size, size, 3), [10, 13, 15], dtype=np.uint8)   # #0a0d0f bg
+
+    # Coordinate grids
+    Y, X = np.mgrid[0:size, 0:size]
+    # Dot is at (cx, cy) — slightly below centre, matching the SVG viewBox
+    cx  = size / 2
+    cy  = size * 296 / 512          # SVG: circle cy="296" in 512-high canvas
+    dist = np.sqrt((X - cx) ** 2 + (Y - cy) ** 2)
+
+    green = np.array([45, 255, 110], dtype=np.float32)   # #2dff6e
+    bg    = np.array([10, 13,  15],  dtype=np.float32)   # #0a0d0f
+
+    # Filled centre dot
+    r_dot = size * 18 / 512
+    img[dist <= r_dot] = green.astype(np.uint8)
+
+    # Three arcs (upper half only: Y <= cy)
+    arc_params = [
+        (size * 80  / 512, size * 9  / 512, 1.00),   # inner  sw=18 → half-width=9
+        (size * 130 / 512, size * 7  / 512, 0.65),   # middle sw=14 → half-width=7
+        (size * 182 / 512, size * 5  / 512, 0.35),   # outer  sw=10 → half-width=5
+    ]
+    above = Y <= cy
+    for radius, half_w, alpha in arc_params:
+        ring = (dist >= radius - half_w) & (dist <= radius + half_w) & above
+        blended = (green * alpha + bg * (1.0 - alpha)).clip(0, 255).astype(np.uint8)
+        img[ring] = blended
+
+    # --- Encode as PNG (RGB, 8-bit, no alpha) ---
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        payload = tag + data
+        return (struct.pack('>I', len(data)) + payload +
+                struct.pack('>I', zlib.crc32(payload) & 0xFFFFFFFF))
+
+    ihdr = struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)   # RGB colour type=2
+    # Filter byte 0 (None) prepended to every row
+    raw_rows = b''.join(b'\x00' + img[row].tobytes() for row in range(size))
+    idat = zlib.compress(raw_rows, 6)
+
+    return (b'\x89PNG\r\n\x1a\n'
+            + _chunk(b'IHDR', ihdr)
+            + _chunk(b'IDAT', idat)
+            + _chunk(b'IEND', b''))
+
+
+_PNG_CACHE: dict[int, bytes] = {}
 
 @app.get("/icon-512.png")
 async def pwa_icon_512():
-    return Response(content=_svg_to_png(512), media_type="image/png",
+    if 512 not in _PNG_CACHE:
+        _PNG_CACHE[512] = _make_icon_png(512)
+    return Response(content=_PNG_CACHE[512], media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/icon-192.png")
 async def pwa_icon_192():
-    return Response(content=_svg_to_png(192), media_type="image/png",
+    if 192 not in _PNG_CACHE:
+        _PNG_CACHE[192] = _make_icon_png(192)
+    return Response(content=_PNG_CACHE[192], media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
 
 
