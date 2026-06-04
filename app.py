@@ -86,9 +86,12 @@ def _ctcss_analyze(buf: np.ndarray, sample_rate: float,
     return gated, detected
 
 
-# Silence chunk sent to audio WebSocket clients every 5 s when no signal is
-# active — keeps the connection alive so the browser never needs to re-enable.
-_AUDIO_KEEPALIVE = bytes(int(AUDIO_RATE * 2 * 0.1))         # 100 ms of zeros
+# Silence chunk used when no audio signal is active.  We use ±1 LSB dither
+# (~-90 dB) rather than pure zeros so Android/Chrome never detects "true
+# silence" and removes the media foreground-service notification.
+_rng = np.random.default_rng(0)
+_AUDIO_KEEPALIVE = _rng.integers(-1, 2, size=int(AUDIO_RATE * 0.1),
+                                 dtype=np.int16).tobytes()   # 100 ms dither
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -552,7 +555,9 @@ function _initAudEl() {
 }
 
 async function _mseConnect() {
-  if (_mseAbort) { _mseAbort.abort(); _mseAbort = null; }
+  // Abort any previous connection (filter change, watchdog reconnect, etc.)
+  if (_mseAbort) { _mseAbort.abort(); }
+  _mseAbort = new AbortController();
   const ms     = new MediaSource();
   const objUrl = URL.createObjectURL(ms);
   _audEl.src   = objUrl;
@@ -574,8 +579,6 @@ async function _mseConnect() {
   const waitSb = () => sb.updating
     ? new Promise(r => sb.addEventListener('updateend', r, { once: true }))
     : Promise.resolve();
-
-  _mseAbort = new AbortController();
 
   const TARGET_LAG = 2.0;   // seconds behind live edge to target after a seek
   const MAX_LAG    = 5.0;   // seconds; seek only if genuinely far behind
@@ -613,32 +616,50 @@ async function _mseConnect() {
     }
   }, 500);
 
-  try {
-    const resp   = await fetch(`/stream.mp3?hp=${A.hp}&lp=${A.lp}`, { signal: _mseAbort.signal });
-    const reader = resp.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done || ms.readyState !== 'open') break;
-      await waitSb();
-      try { sb.appendBuffer(value); } catch (_) {}
-      await waitSb();
-      // Trim old data behind the playhead to bound memory use
-      if (sb.buffered.length && _audEl.currentTime > 0.5) {
-        const trimTo = _audEl.currentTime - 0.2;
-        if (trimTo > sb.buffered.start(0)) {
-          try { sb.remove(sb.buffered.start(0), trimTo); } catch (_) {}
-          await waitSb();
-        }
+  // Use WebSocket instead of HTTP fetch for audio delivery.  Android kills
+  // long-running HTTP streaming responses after a few minutes of background
+  // silence; WebSocket connections survive because Chrome manages them as
+  // persistent connections (same as rdio-scanner's approach).
+  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const audioWs = new WebSocket(`${wsProto}//${location.host}/ws/audio?hp=${A.hp}&lp=${A.lp}`);
+  audioWs.binaryType = 'arraybuffer';
+
+  // Wire abort signal → WebSocket close
+  const _onAbort = () => audioWs.close(1000, 'reconnect');
+  _mseAbort.signal.addEventListener('abort', _onAbort, { once: true });
+
+  await new Promise((resolve, reject) => {
+    audioWs.onopen    = resolve;
+    audioWs.onerror   = reject;
+    audioWs.onclose   = reject;
+  }).catch(() => {});   // errors handled below via onclose
+
+  audioWs.onmessage = async (e) => {
+    if (!e.data || !e.data.byteLength || ms.readyState !== 'open') return;
+    await waitSb();
+    try { sb.appendBuffer(new Uint8Array(e.data)); } catch (_) {}
+    await waitSb();
+    // Trim old data behind the playhead to bound memory use
+    if (sb.buffered.length && _audEl.currentTime > 0.5) {
+      const trimTo = _audEl.currentTime - 0.2;
+      if (trimTo > sb.buffered.start(0)) {
+        try { sb.remove(sb.buffered.start(0), trimTo); } catch (_) {}
+        await waitSb();
       }
     }
-  } catch (e) {
-    if (e.name !== 'AbortError' && S.audioOn)
-      setTimeout(_mseConnect, Math.min(1000 * (++_retries), 30000));
-  } finally {
-    clearInterval(_watchdog);
-    _audEl.removeEventListener('canplay', _jumpToLive);
-    if (_mseSb === sb) _mseSb = null;
-  }
+  };
+
+  await new Promise(resolve => { audioWs.onclose = resolve; });
+
+  _mseAbort.signal.removeEventListener('abort', _onAbort);
+  clearInterval(_watchdog);
+  _audEl.removeEventListener('canplay', _jumpToLive);
+  if (_mseSb === sb) _mseSb = null;
+
+  // Reconnect unless this close was triggered by our own abort (filter change
+  // or explicit close).  Exponential backoff up to 30 s.
+  if (!_mseAbort.signal.aborted && S.audioOn)
+    setTimeout(_mseConnect, Math.min(1000 * (++_retries), 30000));
 }
 
 function _reloadStream() {
@@ -2023,9 +2044,11 @@ async def pwa_manifest():
         "name": name,
         "short_name": name[:15],
         "display": "standalone",
+        "display_override": ["standalone", "minimal-ui"],
         "start_url": "/",
         "background_color": "#0a0d0f",
         "theme_color": "#0a0d0f",
+        "categories": ["music", "utilities"],
         "icons": [
             {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"},
         ],
@@ -2289,6 +2312,119 @@ async def audio_stream_mp3(request: Request,
         media_type='audio/mpeg',
         headers={'Cache-Control': 'no-cache'},
     )
+
+
+@app.websocket("/ws/audio")
+async def ws_audio_endpoint(ws: WebSocket,
+                            hp: int = 0, lp: int = 3000):
+    """WebSocket MP3 audio stream for Android.  Sends binary MP3 frames so
+    the browser can feed them directly into a MediaSource SourceBuffer.
+    Using WebSocket instead of HTTP streaming avoids Android's background
+    network restrictions that kill long-running HTTP responses after a few
+    minutes of inactivity.
+
+    Query params: hp (highpass Hz, 0=off), lp (lowpass Hz, default 3000)."""
+    await ws.accept()
+
+    rate    = scanner.audio_rate if scanner else AUDIO_RATE
+    q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
+    _audio_clients.append(q)
+    silence = _rng.integers(-1, 2, size=int(rate * 0.1),
+                            dtype=np.int16).tobytes()   # 100 ms dither
+
+    # Build ffmpeg audio filter chain
+    af_parts: list[str] = []
+    if 0 < max(0, min(hp, 1000)):
+        af_parts.append(f'highpass=f={max(0, min(hp, 1000))}')
+    if 0 < lp < 8000:
+        af_parts.append(f'lowpass=f={lp}')
+    af_args = ['-af', ','.join(af_parts)] if af_parts else []
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-fflags', '+flush_packets',
+            '-f', 's16le', '-ar', str(rate), '-ac', '1', '-i', 'pipe:0',
+            *af_args,
+            '-c:a', 'libmp3lame', '-b:a', '32k',
+            '-reservoir', '0',
+            '-f', 'mp3', 'pipe:1',
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        try: _audio_clients.remove(q)
+        except ValueError: pass
+        await ws.close(1011, 'ffmpeg not found')
+        return
+
+    stop = asyncio.Event()
+
+    async def _feed():
+        try:
+            proc.stdin.write(silence)
+            await proc.stdin.drain()
+        except (BrokenPipeError, OSError):
+            stop.set(); return
+        try:
+            while not stop.is_set():
+                try:
+                    data = await asyncio.wait_for(q.get(), timeout=0.1)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    data = silence
+                if stop.is_set(): break
+                try:
+                    proc.stdin.write(data)
+                    await proc.stdin.drain()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
+        except Exception:
+            pass
+        finally:
+            stop.set()
+            try: proc.stdin.close()
+            except Exception: pass
+            try: _audio_clients.remove(q)
+            except ValueError: pass
+
+    feed_task = asyncio.create_task(_feed())
+
+    async def _stream():
+        try:
+            while not stop.is_set():
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    break
+        finally:
+            stop.set()
+
+    stream_task = asyncio.create_task(_stream())
+
+    try:
+        # Keep the WebSocket alive; client may send pings but we ignore them.
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(ws.receive_bytes(), timeout=30)
+            except asyncio.TimeoutError:
+                # Send a WebSocket ping to verify the connection is still up.
+                try: await ws.send_bytes(b'')
+                except Exception: break
+            except Exception:
+                break
+    finally:
+        stop.set()
+        feed_task.cancel()
+        stream_task.cancel()
+        try: proc.kill()
+        except Exception: pass
+        await proc.wait()
+        try: await ws.close()
+        except Exception: pass
 
 
 @app.websocket("/ws")
