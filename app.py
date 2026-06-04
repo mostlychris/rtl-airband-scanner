@@ -2082,26 +2082,31 @@ async def index():
 
 
 @app.get("/manifest.json")
-async def pwa_manifest(request: Request):
-    name   = (scanner.name if scanner else None) or "RTL Scanner"
-    origin = str(request.base_url).rstrip('/')
-    return JSONResponse({
-        "name": name,
-        "short_name": name[:15],
-        "display": "standalone",
-        "display_override": ["standalone", "minimal-ui"],
-        "start_url": "/",
-        "scope": "/",
-        "background_color": "#0a0d0f",
-        "theme_color": "#0a0d0f",
-        "categories": ["music", "utilities"],
-        "orientation": "portrait",
-        "icons": [
-            {"src": f"{origin}/icon.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "any maskable"},
-            {"src": f"{origin}/icon-512.png", "sizes": "512x512", "type": "image/png",     "purpose": "any maskable"},
-            {"src": f"{origin}/icon-192.png", "sizes": "192x192", "type": "image/png",     "purpose": "any maskable"},
-        ],
-    })
+async def pwa_manifest():
+    name = (scanner.name if scanner else None) or "RTL Scanner"
+    return JSONResponse(
+        {
+            "name": name,
+            "short_name": name[:15],
+            "display": "standalone",
+            "display_override": ["standalone", "minimal-ui"],
+            "start_url": "/",
+            "scope": "/",
+            "background_color": "#0a0d0f",
+            "theme_color": "#0a0d0f",
+            "categories": ["music", "utilities"],
+            "orientation": "portrait",
+            "icons": [
+                # Relative paths — resolved against the manifest URL by the browser
+                # and by PWABuilder, so they always point to the correct public origin
+                # regardless of reverse-proxy configuration.
+                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+                {"src": "/icon.svg",     "sizes": "any",     "type": "image/svg+xml", "purpose": "any maskable"},
+            ],
+        },
+        headers={"Content-Type": "application/manifest+json"},
+    )
 
 
 _ICON_SVG = """\
@@ -2177,16 +2182,20 @@ _PNG_CACHE: dict[int, bytes] = {}
 async def pwa_icon_512():
     if 512 not in _PNG_CACHE:
         _PNG_CACHE[512] = _make_icon_png(512)
-    return Response(content=_PNG_CACHE[512], media_type="image/png",
-                    headers={"Cache-Control": "public, max-age=86400"})
+    return Response(content=_PNG_CACHE[512],
+                    media_type="image/png",
+                    headers={"Content-Type": "image/png",
+                             "Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/icon-192.png")
 async def pwa_icon_192():
     if 192 not in _PNG_CACHE:
         _PNG_CACHE[192] = _make_icon_png(192)
-    return Response(content=_PNG_CACHE[192], media_type="image/png",
-                    headers={"Cache-Control": "public, max-age=86400"})
+    return Response(content=_PNG_CACHE[192],
+                    media_type="image/png",
+                    headers={"Content-Type": "image/png",
+                             "Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/sw.js")
