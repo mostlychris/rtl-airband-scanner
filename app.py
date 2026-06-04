@@ -775,10 +775,15 @@ function connect() {
         ws.send(JSON.stringify({type: 'ping'}));
     }, 20000);
   };
-  ws.onclose = () => {
+  ws.onclose = (e) => {
     clearInterval(_wsPingTimer);
     _wsPingTimer = null;
     setWsSt(false);
+    // Log close details to the browser console so the cause can be identified:
+    // code 1000=normal, 1001=going away, 1006=abnormal(network drop/timeout),
+    // 1011=server error, 1012=server restart
+    console.warn('[ws] control closed — code:', e.code, 'clean:', e.wasClean,
+                 'reason:', e.reason || '(none)');
     setTimeout(connect, Math.min(2000 * (++wsRetry), 15000));
   };
   ws.onmessage = e => onMsg(JSON.parse(e.data));
@@ -1982,26 +1987,49 @@ class WsManager:
     def __init__(self):
         self._clients: list[WebSocket] = []
         self._lock = asyncio.Lock()
+        # Per-client send locks so broadcast and the per-client keepalive
+        # task never write to the same socket concurrently.
+        self._send_locks: dict[int, asyncio.Lock] = {}
 
     async def connect(self, ws: WebSocket):
         await ws.accept()
-        async with self._lock: self._clients.append(ws)
+        async with self._lock:
+            self._clients.append(ws)
+            self._send_locks[id(ws)] = asyncio.Lock()
 
     async def disconnect(self, ws: WebSocket):
         async with self._lock:
             try: self._clients.remove(ws)
             except ValueError: pass
+            self._send_locks.pop(id(ws), None)
+
+    async def send_one(self, ws: WebSocket, msg: str) -> bool:
+        """Send msg to a single client under its per-socket lock.
+        Returns False if the send failed (client dead)."""
+        lock = self._send_locks.get(id(ws))
+        if lock is None:
+            return False
+        async with lock:
+            try:
+                await ws.send_text(msg)
+                return True
+            except Exception:
+                return False
 
     async def broadcast(self, data: dict):
         msg = json.dumps(data, default=str)
         async with self._lock:
-            dead = []
-            for ws in self._clients:
-                try: await ws.send_text(msg)
-                except Exception: dead.append(ws)
-            for ws in dead:
-                try: self._clients.remove(ws)
-                except ValueError: pass
+            clients = list(self._clients)
+        dead = []
+        for ws in clients:
+            if not await self.send_one(ws, msg):
+                dead.append(ws)
+        if dead:
+            async with self._lock:
+                for ws in dead:
+                    try: self._clients.remove(ws)
+                    except ValueError: pass
+                    self._send_locks.pop(id(ws), None)
 
 
 # ── App state ──────────────────────────────────────────────────────────────────
@@ -2626,10 +2654,13 @@ async def ws_endpoint(ws: WebSocket):
     async def _keepalive():
         # 15 s interval keeps well under nginx's default proxy_read_timeout of
         # 60 s even if the asyncio event loop is briefly busy.
+        # Uses wsman.send_one() so the ping is serialised with broadcast sends
+        # via the per-socket lock — prevents concurrent writes on the same WS.
+        ping = json.dumps({"type": "ping"})
         while True:
             await asyncio.sleep(15)
-            try: await ws.send_text(json.dumps({"type": "ping"}))
-            except Exception: return
+            if not await wsman.send_one(ws, ping):
+                return
 
     ka = asyncio.create_task(_keepalive())
     try:
@@ -2707,7 +2738,16 @@ def main():
     )
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")
-    uvicorn.run(app, host="0.0.0.0", port=args.listen_port, log_level="warning")
+    uvicorn.run(
+        app,
+        host           = "0.0.0.0",
+        port           = args.listen_port,
+        log_level      = "warning",
+        ws_ping_interval = 20,   # send protocol-level WS ping every 20 s
+        ws_ping_timeout  = 90,   # wait up to 90 s for pong — Android WiFi
+                                 # power-save can delay pong well past the
+                                 # default 20 s, causing spurious disconnects
+    )
 
 
 if __name__ == "__main__":
