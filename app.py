@@ -650,19 +650,38 @@ async function _mseConnect() {
     audioWs.onclose   = reject;
   }).catch(() => {});   // errors handled below via onclose
 
-  audioWs.onmessage = async (e) => {
-    if (!e.data || !e.data.byteLength || ms.readyState !== 'open') return;
-    await waitSb();
-    try { sb.appendBuffer(new Uint8Array(e.data)); } catch (_) {}
-    await waitSb();
-    // Trim old data behind the playhead to bound memory use
-    if (sb.buffered.length && _audEl.currentTime > 0.5) {
-      const trimTo = _audEl.currentTime - 0.2;
-      if (trimTo > sb.buffered.start(0)) {
-        try { sb.remove(sb.buffered.start(0), trimTo); } catch (_) {}
-        await waitSb();
+  // SourceBuffer operations must be serialised — appendBuffer and remove
+  // both throw InvalidStateError if called while an update is already in
+  // progress.  WebSocket onmessage fires for every incoming frame, so
+  // concurrent async handlers easily race each other.  We queue raw frames
+  // and drain one at a time through a single async loop.
+  const _sbQueue = [];
+  let   _sbDraining = false;
+
+  const _drainSb = async () => {
+    if (_sbDraining) return;
+    _sbDraining = true;
+    while (_sbQueue.length) {
+      const data = _sbQueue.shift();
+      if (!data || !data.byteLength || ms.readyState !== 'open') continue;
+      await waitSb();
+      try { sb.appendBuffer(new Uint8Array(data)); } catch (_) { continue; }
+      await waitSb();
+      // Trim old data behind the playhead to bound memory use
+      if (sb.buffered.length && _audEl.currentTime > 0.5) {
+        const trimTo = _audEl.currentTime - 0.2;
+        if (trimTo > sb.buffered.start(0)) {
+          try { sb.remove(sb.buffered.start(0), trimTo); } catch (_) {}
+          await waitSb();
+        }
       }
     }
+    _sbDraining = false;
+  };
+
+  audioWs.onmessage = (e) => {
+    _sbQueue.push(e.data);
+    _drainSb();
   };
 
   await new Promise(resolve => { audioWs.onclose = resolve; });
