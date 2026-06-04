@@ -882,7 +882,7 @@ function cardHtml(s) {
           + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
           + (pl ? '<span class="ch-pl">PL ' + pl + '</span>' : '')
           + '<span class="ch-sq">SQ ' + sq + '</span>'
-          + (gn && gn !== 'auto' ? '<span class="ch-gn">G ' + gn + '</span>' : '')
+          + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
           + '<span class="ch-t">' + t + '</span>'
           + '<div class="ch-acts">'
           + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
