@@ -86,12 +86,15 @@ def _ctcss_analyze(buf: np.ndarray, sample_rate: float,
     return gated, detected
 
 
-# Silence chunk used when no audio signal is active.  We use ±1 LSB dither
-# (~-90 dB) rather than pure zeros so Android/Chrome never detects "true
-# silence" and removes the media foreground-service notification.
+# Silence chunk used when no audio signal is active.
+# Android measures actual audio output energy to decide whether Chrome's media
+# foreground service stays active.  ±1 LSB (~-90 dB) is below Android's
+# detection threshold.  ±100 (~-50 dB) is a faint hiss well below normal
+# speech levels but registers as real audio output — keeping the foreground
+# service alive between transmissions.
 _rng = np.random.default_rng(0)
-_AUDIO_KEEPALIVE = _rng.integers(-1, 2, size=int(AUDIO_RATE * 0.1),
-                                 dtype=np.int16).tobytes()   # 100 ms dither
+_AUDIO_KEEPALIVE = _rng.integers(-100, 101, size=int(AUDIO_RATE * 0.1),
+                                 dtype=np.int16).tobytes()   # 100 ms ~-50 dB noise
 
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
@@ -449,6 +452,12 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
       SQ Tail Cut
     </label>
   </div>
+  <div class="actl" id="aWakeLockRow" style="display:none">
+    <label class="atog">
+      <input type="checkbox" id="aWakeLock" onchange="setWakeLock(this.checked)">
+      Screen On (keep-alive)
+    </label>
+  </div>
 </div>
 </div>
 <div class="overlay hidden" id="overlay">
@@ -684,12 +693,16 @@ function openAudioStream(mount) {
     });
   }
   _updateMediaSession(true);
+  // On Android, auto-acquire wake lock so the screen stays on and Android
+  // cannot apply Doze mode restrictions.  User can disable in audio settings.
+  if (/Android/i.test(navigator.userAgent)) _acquireWakeLock();
   updateAudioUI();
 }
 
 function closeAudio() {
   if (_audEl) _audEl.pause();
   audMount = null;
+  _releaseWakeLock();
   _updateMediaSession(false);
 }
 
@@ -1165,6 +1178,37 @@ function initControls() {
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
   document.getElementById('aHP').value = String(A.hp);
   document.getElementById('aSqTail').checked = A.sqtail;
+  // Show Wake Lock toggle only on Android where background killing is a problem
+  if (/Android/i.test(navigator.userAgent) && 'wakeLock' in navigator)
+    document.getElementById('aWakeLockRow').style.display = '';
+}
+
+// ── Screen Wake Lock (Android keep-alive) ─────────────────────────────────────
+// Keeping the screen on is the only fully-reliable PWA way to prevent Android
+// from killing the connection during silence periods between transmissions.
+// The proper long-term fix is a TWA (Trusted Web Activity) wrapper that can
+// hold a FOREGROUND_SERVICE_MEDIA_PLAYBACK permission without the screen.
+let _wakeLock = null;
+async function _acquireWakeLock() {
+  if (!('wakeLock' in navigator) || _wakeLock) return;
+  try {
+    _wakeLock = await navigator.wakeLock.request('screen');
+    _wakeLock.addEventListener('release', () => {
+      _wakeLock = null;
+      // Re-acquire if audio is still on and the page is visible (e.g. OS took it back)
+      if (S.audioOn && document.visibilityState === 'visible')
+        setTimeout(_acquireWakeLock, 1000);
+    });
+    document.getElementById('aWakeLock').checked = true;
+  } catch (_) {}
+}
+function _releaseWakeLock() {
+  if (_wakeLock) { _wakeLock.release(); _wakeLock = null; }
+  const cb = document.getElementById('aWakeLock');
+  if (cb) cb.checked = false;
+}
+function setWakeLock(on) {
+  if (on) _acquireWakeLock(); else _releaseWakeLock();
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────────
