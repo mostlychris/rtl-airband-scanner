@@ -496,6 +496,7 @@ let audMount   = null;
 let _audEl     = null;   // HTMLAudioElement
 let _mseAbort  = null;   // AbortController for the MSE fetch loop
 let _mseActive = false;  // true when feeding the element via MediaSource
+let _mseSb     = null;   // current MSE SourceBuffer — exposed for buffer-depth reads
 let _retries   = 0;
 let _stallTimer = null;
 
@@ -562,6 +563,7 @@ async function _mseConnect() {
   let sb;
   try {
     sb = ms.addSourceBuffer('audio/mpeg');
+    _mseSb = sb;   // expose for buffer-depth reads (e.g. squelch gate delay)
   } catch (e) {
     // MSE not supported for this type — fall back to direct src
     _mseActive  = false;
@@ -635,6 +637,7 @@ async function _mseConnect() {
   } finally {
     clearInterval(_watchdog);
     _audEl.removeEventListener('canplay', _jumpToLive);
+    if (_mseSb === sb) _mseSb = null;
   }
 }
 
@@ -755,9 +758,20 @@ function onMsg(m) {
     }
     // Squelch tail suppression: gate audio closed on signal drop, open on signal open.
     // Only applied to the currently playing mount so background activity is ignored.
+    // On the MSE path the audio is buffered ~2 s behind real-time, so we delay
+    // the gate by the current buffer depth so it fires at the right point in the
+    // audio timeline rather than 2 s early (which would cut voice, then let the
+    // noisy tail play unmuted once the buffer catches up).
     if (A.sqtail && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
-      _setGate(m.active);
       _sqActive = m.active;
+      const active = m.active;
+      if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
+        const lagMs = Math.max(0,
+          (_mseSb.buffered.end(_mseSb.buffered.length - 1) - _audEl.currentTime) * 1000);
+        setTimeout(() => _setGate(active), lagMs);
+      } else {
+        _setGate(active);
+      }
     }
   } else if (m.type === 'channels_update') {
     const s = S.streams[m.mount]; if (!s) return;
