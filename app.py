@@ -300,6 +300,8 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .ch-edit-in{background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;font-family:var(--mono);min-width:0}
 .ch-edit-lbl{flex:1}.ch-edit-sq{width:64px}.ch-edit-gn{width:72px}.ch-edit-pl{width:64px}
 .ch-pl{font-size:9px;color:var(--purple);letter-spacing:.05em;flex-shrink:0;opacity:.8}
+.ch-sq{font-size:9px;color:var(--cyan);letter-spacing:.05em;flex-shrink:0;opacity:.65}
+.ch-gn{font-size:9px;color:var(--amber);letter-spacing:.05em;flex-shrink:0;opacity:.65}
 .ch-save{background:rgba(45,255,110,.08);border:1px solid rgba(45,255,110,.3);border-radius:3px;color:var(--green);cursor:pointer;font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:2px 10px;white-space:nowrap}
 .ch-cancel{background:none;border:1px solid #1e2a3e;border-radius:3px;color:var(--muted);cursor:pointer;font-size:9px;letter-spacing:.06em;padding:2px 8px}
 .ch-add-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:10px;color:var(--muted);cursor:pointer;border-top:1px solid #141e30;transition:color .15s;letter-spacing:.1em;text-transform:uppercase}
@@ -879,6 +881,8 @@ function cardHtml(s) {
           + '<span class="ch-f">' + f + '</span>'
           + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
           + (pl ? '<span class="ch-pl">PL ' + pl + '</span>' : '')
+          + '<span class="ch-sq">SQ ' + sq + '</span>'
+          + (gn && gn !== 'auto' ? '<span class="ch-gn">G ' + gn + '</span>' : '')
           + '<span class="ch-t">' + t + '</span>'
           + '<div class="ch-acts">'
           + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
