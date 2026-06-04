@@ -410,6 +410,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   <div class="dot" id="wdot"></div>
   <span class="st" id="wst">Connecting…</span>
   <span class="st" style="opacity:.35;font-size:.7em;margin-left:6px">v__VERSION__</span>
+  <span id="wslog" style="font-size:.65em;color:#f84;margin-left:8px;display:none" title="Last disconnect"></span>
   <div class="spacer"></div>
   <span class="asrc" id="asrc"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
@@ -779,11 +780,17 @@ function connect() {
     clearInterval(_wsPingTimer);
     _wsPingTimer = null;
     setWsSt(false);
-    // Log close details to the browser console so the cause can be identified:
-    // code 1000=normal, 1001=going away, 1006=abnormal(network drop/timeout),
+    // Show disconnect info directly in the UI (visible in the TWA without DevTools)
+    // code 1000=normal, 1001=going away, 1006=abnormal/network drop,
     // 1011=server error, 1012=server restart
-    console.warn('[ws] control closed — code:', e.code, 'clean:', e.wasClean,
-                 'reason:', e.reason || '(none)');
+    const ts  = new Date().toLocaleTimeString();
+    const why = e.reason || '';
+    const log = document.getElementById('wslog');
+    if (log) {
+      log.textContent = `✕${e.code}${why ? ' '+why : ''} @${ts}`;
+      log.style.display = '';
+    }
+    console.warn('[ws] closed code:', e.code, 'clean:', e.wasClean, 'reason:', why);
     setTimeout(connect, Math.min(2000 * (++wsRetry), 15000));
   };
   ws.onmessage = e => onMsg(JSON.parse(e.data));
@@ -791,6 +798,7 @@ function connect() {
 function setWsSt(ok) {
   document.getElementById('wdot').className = 'dot ' + (ok ? 'ok' : 'err');
   document.getElementById('wst').textContent = ok ? 'Connected' : 'Reconnecting…';
+  if (ok) { const l = document.getElementById('wslog'); if (l) l.style.display = 'none'; }
 }
 
 // ── Message handler ────────────────────────────────────────────────────────────
