@@ -537,6 +537,13 @@ function _initAudEl() {
   _audEl = new Audio();
   _audEl.volume = A.vol;
   _audEl.addEventListener('playing', () => { _retries = 0; clearTimeout(_stallTimer); });
+  _audEl.addEventListener('pause', () => {
+    // Chrome may spontaneously pause the element during battery-optimization
+    // events or when it suspects the audio is idle.  Auto-resume immediately
+    // as long as the user hasn't explicitly turned audio off.
+    if (!S.audioOn) return;
+    _audEl.play().catch(() => {});
+  });
   _audEl.addEventListener('stalled', () => {
     if (!S.audioOn) return;
     // MSE seeks (canplay jump, watchdog) cause spurious stalled events — the
@@ -2563,16 +2570,20 @@ async def ws_audio_endpoint(ws: WebSocket,
     stream_task = asyncio.create_task(_stream())
 
     try:
-        # Keep the WebSocket alive; client may send pings but we ignore them.
+        # Wait for the client to disconnect or for _stream/_feed to fail.
+        # Do NOT send anything from this loop — _stream already sends audio
+        # frames continuously (including silence), keeping the connection alive.
+        # A second concurrent sender would interleave with _stream's sends,
+        # corrupt WebSocket framing, and drop the connection.
         while not stop.is_set():
             try:
-                await asyncio.wait_for(ws.receive_bytes(), timeout=30)
+                # receive_bytes detects client-initiated close; timeout just
+                # means the client sent nothing (expected — it's receive-only).
+                await asyncio.wait_for(ws.receive_bytes(), timeout=60)
             except asyncio.TimeoutError:
-                # Send a WebSocket ping to verify the connection is still up.
-                try: await ws.send_bytes(b'')
-                except Exception: break
+                pass   # normal — client never sends; stream is keeping conn alive
             except Exception:
-                break
+                break  # client disconnected
     finally:
         stop.set()
         feed_task.cancel()
