@@ -592,24 +592,31 @@ async function _mseConnect() {
   const TARGET_LAG = 2.0;   // seconds behind live edge to target after a seek
   const MAX_LAG    = 5.0;   // seconds; seek only if genuinely far behind
 
-  // On first canplay, jump to the live edge so we don't start playing content
-  // that was buffered while the encoder was warming up (which would be 3–10 s
-  // stale by the time Chrome fires the event).
+  // canplay handler: resumes playback and (once) seeks to the live edge.
+  //
+  // IMPORTANT — not registered with { once: true }.  If canplay fires while
+  // the buffer is too shallow to seek, we still call play() but skip the seek.
+  // With { once: true } that early fire consumes the handler and play() is
+  // never called, leaving the element paused after a reconnect.  Without it,
+  // every subsequent canplay (e.g. after a seek-induced waiting→canplay cycle)
+  // will also attempt play() — harmless when already playing.
   let _jumped = false;
   const _jumpToLive = () => {
-    if (_jumped || !sb || !sb.buffered.length) return;
-    const liveEdge = sb.buffered.end(sb.buffered.length - 1);
-    // Only jump if the buffer is deep enough to land TARGET_LAG behind live
-    // and still have data to play — otherwise Chrome immediately hits waiting.
-    if (liveEdge < TARGET_LAG + 0.5) return;
-    _jumped = true;
-    try { _audEl.currentTime = Math.max(0, liveEdge - TARGET_LAG); } catch (_) {}
-    // Resume playback if the element is paused — this handles filter-change
-    // reconnects (setHP/setLP → _mseConnect) where play() is not called again
-    // by the caller, as well as the normal first-start path.
+    if (!sb || !sb.buffered.length) return;
+    // Always resume if paused — covers reconnect paths where openAudioStream
+    // / play() is not called again by the caller.
     if (_audEl.paused) _audEl.play().catch(() => {});
+    // Seek to live edge once, but only when the buffer is deep enough to
+    // land TARGET_LAG behind live with data still ahead to play.
+    if (!_jumped) {
+      const liveEdge = sb.buffered.end(sb.buffered.length - 1);
+      if (liveEdge >= TARGET_LAG + 0.5) {
+        _jumped = true;
+        try { _audEl.currentTime = Math.max(0, liveEdge - TARGET_LAG); } catch (_) {}
+      }
+    }
   };
-  _audEl.addEventListener('canplay', _jumpToLive, { once: true });
+  _audEl.addEventListener('canplay', _jumpToLive);
 
   // Ongoing watchdog: seek forward only when genuinely far behind AND Chrome
   // is actively playing (readyState 4 = HAVE_ENOUGH_DATA).  Skipping the seek
