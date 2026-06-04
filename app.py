@@ -588,6 +588,10 @@ async function _mseConnect() {
     if (liveEdge < TARGET_LAG + 0.5) return;
     _jumped = true;
     try { _audEl.currentTime = Math.max(0, liveEdge - TARGET_LAG); } catch (_) {}
+    // Resume playback if the element is paused — this handles filter-change
+    // reconnects (setHP/setLP → _mseConnect) where play() is not called again
+    // by the caller, as well as the normal first-start path.
+    if (_audEl.paused) _audEl.play().catch(() => {});
   };
   _audEl.addEventListener('canplay', _jumpToLive, { once: true });
 
