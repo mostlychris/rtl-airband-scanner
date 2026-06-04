@@ -606,7 +606,7 @@ async function _mseConnect() {
   }, 500);
 
   try {
-    const resp   = await fetch('/stream.mp3', { signal: _mseAbort.signal });
+    const resp   = await fetch(`/stream.mp3?hp=${A.hp}&lp=${A.lp}`, { signal: _mseAbort.signal });
     const reader = resp.body.getReader();
     while (true) {
       const { done, value } = await reader.read();
@@ -1097,13 +1097,17 @@ function setVol(v) {
 function setHP(v) {
   A.hp = parseInt(v, 10);
   localStorage.setItem('a_hp', A.hp);
-  // HP filter unavailable without AudioContext interception; setting persisted only.
+  // On the MSE path the filter runs in ffmpeg server-side; reconnect the
+  // stream so the new cutoff takes effect immediately.
+  if (_mseActive && S.audioOn) _mseConnect();
 }
 function setLP(v) {
   A.lp = parseInt(v, 10);
   localStorage.setItem('a_lp', A.lp);
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
-  // LP filter unavailable without AudioContext interception; setting persisted only.
+  // On the MSE path the filter runs in ffmpeg server-side; reconnect the
+  // stream so the new cutoff takes effect immediately.
+  if (_mseActive && S.audioOn) _mseConnect();
 }
 function setSqTail(v) {
   A.sqtail = v;
@@ -2160,9 +2164,13 @@ async def audio_stream(request: Request):
 
 
 @app.get("/stream.mp3")
-async def audio_stream_mp3(request: Request):
+async def audio_stream_mp3(request: Request,
+                           hp: int = 0, lp: int = 3000):
     """MP3 stream for Android — ffmpeg encodes PCM to MP3 so Android's media
     stack treats the tab as a radio app, surviving Doze mode indefinitely.
+    Query params:
+      hp  — highpass cutoff Hz (0 = off, e.g. 100 or 300)
+      lp  — lowpass  cutoff Hz (default 3000; 0 or >=8000 = off)
     Requires: sudo apt install ffmpeg"""
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
@@ -2171,11 +2179,25 @@ async def audio_stream_mp3(request: Request):
     # real audio bursts without injecting audible gaps mid-transmission.
     silence = bytes(int(rate * 2 * 0.1))
 
+    # Build audio filter chain from HP/LP params.
+    # HP: clamp to sane range; 0 means disabled.
+    # LP: default 3000 Hz; 0 or >=8000 treated as disabled (no filter needed
+    #     at or above the audio Nyquist at 24 kHz).
+    af_parts: list[str] = []
+    hp_hz = max(0, min(hp, 1000))
+    lp_hz = max(0, lp)
+    if hp_hz > 0:
+        af_parts.append(f'highpass=f={hp_hz}')
+    if 0 < lp_hz < 8000:
+        af_parts.append(f'lowpass=f={lp_hz}')
+    af_args = ['-af', ','.join(af_parts)] if af_parts else []
+
     try:
         proc = await asyncio.create_subprocess_exec(
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
             '-fflags', '+flush_packets',          # flush output after every frame
             '-f', 's16le', '-ar', str(rate), '-ac', '1', '-i', 'pipe:0',
+            *af_args,
             '-c:a', 'libmp3lame', '-b:a', '32k',
             '-reservoir', '0',      # disable bit reservoir — each frame flushes immediately
             '-f', 'mp3', 'pipe:1',
