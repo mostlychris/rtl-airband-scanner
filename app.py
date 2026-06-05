@@ -1434,6 +1434,12 @@ if (_isNativeApp) {
 _initAudEl();   // pre-create the element so the /stream connection opens early
 connect();
 initControls();
+// Desktop: AudioContext starts suspended if created before a user gesture.
+// Resume it on the first pointer interaction so audio flows without requiring
+// the user to manually adjust the volume slider.
+document.addEventListener('pointerdown', function _resumeCtx() {
+  if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
+}, { once: true, passive: true });
 if (!S.audioOn) setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
 updateAudioUI();
 </script>
@@ -2886,10 +2892,13 @@ def main():
         host           = "0.0.0.0",
         port           = args.listen_port,
         log_level      = "warning",
-        ws_ping_interval = 20,   # send protocol-level WS ping every 20 s
-        ws_ping_timeout  = 90,   # wait up to 90 s for pong — Android WiFi
-                                 # power-save can delay pong well past the
-                                 # default 20 s, causing spurious disconnects
+        # Disable uvicorn's protocol-level WebSocket pings.  Android WebView
+        # (and some other clients) do not reliably respond to server-initiated
+        # protocol pings; uvicorn then closes with 1011 after ws_ping_timeout.
+        # Application-level keepalive is handled by the JS client sending a
+        # JSON {type:"ping"} text frame every 15 s, which is sufficient to
+        # keep the TCP connection alive through Android's WiFi power-save.
+        ws_ping_interval = None,
     )
 
 
