@@ -794,7 +794,11 @@ function openAudioStream(mount) {
   if (_isNativeApp) {
     // Hand off to ScannerService — MediaPlayer handles connection, reconnect,
     // WiFi lock, and foreground service independently of the WebView.
-    window.AndroidNative.startAudio(location.origin + '/stream');
+    // Use /stream.mp3 (ffmpeg-encoded) — Android MediaPlayer handles MP3 live
+    // streams reliably; the WAV endpoint uses 0xFFFFFFFF length which many
+    // Android decoders reject for streaming.  HP/LP are applied server-side.
+    const nativeUrl = location.origin + '/stream.mp3?hp=' + A.hp + '&lp=' + A.lp;
+    window.AndroidNative.startAudio(nativeUrl);
     _applyVolume();
     _updateMediaSession(true);
     updateAudioUI();
@@ -1334,7 +1338,9 @@ function setVol(v) {
 function setHP(v) {
   A.hp = parseInt(v, 10);
   localStorage.setItem('a_hp', A.hp);
-  if (_hpNode) {
+  if (_isNativeApp) {
+    if (audMount && S.audioOn) openAudioStream(audMount);  // reconnect with new filter
+  } else if (_hpNode) {
     _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent
   } else if (_mseActive && S.audioOn) {
     _mseConnect();   // ffmpeg path: reconnect with new filter param
@@ -1344,7 +1350,9 @@ function setLP(v) {
   A.lp = parseInt(v, 10);
   localStorage.setItem('a_lp', A.lp);
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
-  if (_lpNode) {
+  if (_isNativeApp) {
+    if (audMount && S.audioOn) openAudioStream(audMount);  // reconnect with new filter
+  } else if (_lpNode) {
     _lpNode.frequency.value = A.lp;
   } else if (_mseActive && S.audioOn) {
     _mseConnect();   // ffmpeg path: reconnect with new filter param
