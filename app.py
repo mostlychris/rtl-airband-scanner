@@ -490,12 +490,13 @@ function escHtml(s) {
 // Three paths depending on the runtime environment:
 //
 //  1. Native Android app  (window.AndroidNative defined)
-//     <audio src=/stream> → Web Audio graph → HP → LP → Vol → Gate → out
-//     The native app has a WiFi wake lock + foreground service so the simple
-//     WAV stream is reliable.  Web Audio BiquadFilters handle HP/LP in-browser.
+//     ScannerService MediaPlayer — audio runs OUTSIDE the WebView entirely.
+//     JS calls window.AndroidNative.startAudio(url) / stopAudio() / setVolume(v).
+//     The service has its own WiFi lock + foreground service; it survives
+//     background, screen-off, Doze, and long silences without any WebView audio.
 //
 //  2. Desktop browser
-//     Same as native — <audio src=/stream> + Web Audio graph.
+//     <audio src=/stream> + Web Audio graph (HP/LP BiquadFilters, volume, gate).
 //
 //  3. Android browser / TWA  (isAndroid && not native app)
 //     MSE + WebSocket + ffmpeg.  Retained as fallback for browser users where
@@ -560,7 +561,10 @@ function _initWebAudioGraph() {
 }
 
 function _applyVolume() {
-  if (_volNode && _gateNode) {
+  if (_isNativeApp) {
+    // Route to ScannerService — it owns the MediaPlayer
+    window.AndroidNative.setVolume(A.vol * _gateGain);
+  } else if (_volNode && _gateNode) {
     _volNode.gain.value  = A.vol;
     _gateNode.gain.value = _gateGain;
   } else if (_audEl) {
@@ -570,6 +574,12 @@ function _applyVolume() {
 
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
+  if (_isNativeApp) {
+    // Native path: instant gate via setVolume (no Web Audio graph)
+    _gateGain = open ? 1.0 : 0.0;
+    _applyVolume();
+    return;
+  }
   if (open) {
     _gateGain = 1.0;
     if (_gateNode && _audioCtx) {
@@ -596,6 +606,10 @@ function _setGate(open) {
 }
 
 function _initAudEl() {
+  // Native app: audio lives entirely in ScannerService (MediaPlayer).
+  // No HTMLAudioElement or Web Audio graph is needed — skip.
+  if (_isNativeApp) return;
+
   if (_audEl) return;
   _audEl = new Audio();
   _audEl.volume = A.vol;
@@ -622,8 +636,8 @@ function _initAudEl() {
     _mseActive = true;
     _mseConnect();
   } else {
-    // Native app + desktop: simple WAV stream with Web Audio graph for
-    // HP/LP filtering, volume, and squelch gate.
+    // Desktop: simple WAV stream with Web Audio graph for HP/LP filtering,
+    // volume, and squelch gate.
     _audEl.src = '/stream';
     _initWebAudioGraph();
   }
@@ -777,6 +791,15 @@ function openAudioStream(mount) {
   audMount  = mount;
   _sqActive = true;
   _gateGain = 1.0;
+  if (_isNativeApp) {
+    // Hand off to ScannerService — MediaPlayer handles connection, reconnect,
+    // WiFi lock, and foreground service independently of the WebView.
+    window.AndroidNative.startAudio(location.origin + '/stream');
+    _applyVolume();
+    _updateMediaSession(true);
+    updateAudioUI();
+    return;
+  }
   _initAudEl();
   _applyVolume();
   // Resume AudioContext if suspended (browsers require user gesture before
@@ -795,7 +818,11 @@ function openAudioStream(mount) {
 }
 
 function closeAudio() {
-  if (_audEl) _audEl.pause();
+  if (_isNativeApp) {
+    window.AndroidNative.stopAudio();
+  } else if (_audEl) {
+    _audEl.pause();
+  }
   audMount = null;
   _releaseWakeLock();
   _updateMediaSession(false);
@@ -1174,18 +1201,30 @@ function toggleAudio() {
 }
 function enableAudio() {
   S.audioOn = true; localStorage.setItem('a_on','true'); closeOverlay();
-  // Always start the stream element right here — this is a gesture context,
-  // so play() is guaranteed to succeed regardless of whether S.streams is
-  // populated yet.  openAudioStream (called when state arrives) will no-op
-  // since the element is already playing.
-  _initAudEl();
-  _gateGain = 1.0; _applyVolume();
-  if (_audEl.error) _audEl.load();  // only reset on actual error, not just paused
-  _audEl.play().catch(() => {});
-  audMount = audMount
-    || S.locked || S.playing
-    || (Object.values(S.streams).find(s => s.connected) || {}).mount
-    || 'sdr';
+  _gateGain = 1.0;
+  if (_isNativeApp) {
+    // Native: kick off MediaPlayer via openAudioStream once we know the mount
+    audMount = audMount
+      || S.locked || S.playing
+      || (Object.values(S.streams).find(s => s.connected) || {}).mount;
+    if (audMount) openAudioStream(audMount);
+    _applyVolume();
+  } else {
+    // Always start the stream element right here — this is a gesture context,
+    // so play() is guaranteed to succeed regardless of whether S.streams is
+    // populated yet.  openAudioStream (called when state arrives) will no-op
+    // since the element is already playing.
+    _initAudEl();
+    _applyVolume();
+    if (_audEl.error) _audEl.load();  // only reset on actual error, not just paused
+    _audEl.play().catch(() => {});
+  }
+  if (!_isNativeApp) {
+    audMount = audMount
+      || S.locked || S.playing
+      || (Object.values(S.streams).find(s => s.connected) || {}).mount
+      || 'sdr';
+  }
   _updateMediaSession(true);
   updateAudioUI();
   Object.keys(S.streams).forEach(m => updateCard(m));
@@ -1195,7 +1234,8 @@ function updateAudioUI() {
   document.getElementById('acontrols').classList.toggle('hidden', !S.audioOn);
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
-  const connected = _audEl && !_audEl.paused;
+  // Native: MediaPlayer is always "connected" once audMount is set
+  const connected = _isNativeApp ? !!audMount : (_audEl && !_audEl.paused);
   if (S.audioOn) {
     const s = audMount ? S.streams[audMount] : null;
     btn.className = 'abtn on';
