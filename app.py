@@ -504,7 +504,7 @@ function escHtml(s) {
 
 // ── Audio settings (persisted in localStorage) ────────────────────────────────
 const A = {
-  vol:    parseFloat(localStorage.getItem('a_vol')    ?? '1'),
+  vol:    Math.min(1, Math.max(0, parseFloat(localStorage.getItem('a_vol') ?? '1') || 1)),
   hp:     parseInt(  localStorage.getItem('a_hp')     ?? '0',   10),
   lp:     parseInt(  localStorage.getItem('a_lp')     ?? '3000', 10),
   sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
@@ -612,7 +612,7 @@ function _initAudEl() {
 
   if (_audEl) return;
   _audEl = new Audio();
-  _audEl.volume = A.vol;
+  _audEl.volume = Math.min(1, Math.max(0, A.vol));
   _audEl.addEventListener('playing', () => { _retries = 0; clearTimeout(_stallTimer); });
   _audEl.addEventListener('pause', () => {
     if (!S.audioOn) return;
