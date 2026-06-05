@@ -410,7 +410,8 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   <div class="dot" id="wdot"></div>
   <span class="st" id="wst">Connecting…</span>
   <span class="st" style="opacity:.35;font-size:.7em;margin-left:6px">v__VERSION__</span>
-  <span id="wslog" style="font-size:.65em;color:#f84;margin-left:8px;display:none" title="Last disconnect"></span>
+  <span id="wscount" style="font-size:.65em;color:var(--muted);margin-left:6px" title="Active connections"></span>
+  <span id="wslog" style="font-size:.65em;color:#f84;margin-left:6px" title="Last disconnect — persists until next disconnect"></span>
   <div class="spacer"></div>
   <span class="asrc" id="asrc"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
@@ -818,18 +819,16 @@ let _wsPingTimer = null;
 function connect() {
   const _wsp = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(_wsp + '//' + location.host + '/ws');
+  let _wsConnectedAt = null;
+
   ws.onopen = () => {
     wsRetry = 0;
+    _wsConnectedAt = new Date();
     setWsSt(true);
-    // Send a client-side ping every 20 s.  This creates outgoing traffic from
-    // the device, which is critical for two reasons:
-    //   1. Android's network stack tracks outgoing packets to decide if a
-    //      connection is active — incoming-only traffic can still be flagged
-    //      as idle and have the TCP flow restricted.
-    //   2. NAT entries on home routers typically require bidirectional traffic
-    //      to stay alive; an entry with only server→client traffic can expire.
-    // The server already pings every 15 s (server→client); this adds the
-    // client→server direction to complete the bidirectional keepalive.
+    // Log reconnects so the user can see the gap duration in the activity log
+    const log = document.getElementById('wslog');
+    if (log && log.textContent)
+      pushActivity('Network', '—', 'Reconnected', _wsConnectedAt.toISOString());
     clearInterval(_wsPingTimer);
     _wsPingTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN)
@@ -840,17 +839,15 @@ function connect() {
     clearInterval(_wsPingTimer);
     _wsPingTimer = null;
     setWsSt(false);
-    const ts  = new Date().toLocaleTimeString();
+    const now = new Date();
+    const ts  = now.toLocaleTimeString();
     const why = e.reason || '';
+    // Update the persistent disconnect badge in the header
     const log = document.getElementById('wslog');
-    if (log) {
-      log.textContent = `✕${e.code}${why ? ' '+why : ''} @${ts}`;
-      log.style.display = '';
-    }
+    if (log) log.textContent = `✕${e.code}${why ? ' '+why : ''} @${ts}`;
+    // Add an entry to the activity log so the history survives reconnect
+    pushActivity('Network', `✕${e.code}`, 'Disconnected', now.toISOString());
     console.warn('[ws] closed code:', e.code, 'clean:', e.wasClean, 'reason:', why);
-    // 1006 = TCP killed by Android network stack (WiFi power-save).
-    // Reconnect immediately on the first attempt so the user sees at most a
-    // flash of red; only back off if the server itself is unreachable.
     wsRetry++;
     const delay = (e.code === 1006 && wsRetry <= 3) ? 0
                 : Math.min(1000 * wsRetry, 15000);
@@ -861,7 +858,8 @@ function connect() {
 function setWsSt(ok) {
   document.getElementById('wdot').className = 'dot ' + (ok ? 'ok' : 'err');
   document.getElementById('wst').textContent = ok ? 'Connected' : 'Reconnecting…';
-  if (ok) { const l = document.getElementById('wslog'); if (l) l.style.display = 'none'; }
+  // wslog intentionally NOT cleared on reconnect — leave last disconnect code
+  // visible so the user can read the code after the connection recovers.
 }
 
 // ── Message handler ────────────────────────────────────────────────────────────
@@ -967,6 +965,9 @@ function onMsg(m) {
     s.connected = m.connected;
     s.lastError  = m.error || null;
     updateCard(m.mount);
+  } else if (m.type === 'ws_clients') {
+    const el = document.getElementById('wscount');
+    if (el) el.textContent = m.count > 0 ? `·${m.count}` : '';
   }
 }
 
@@ -2746,6 +2747,7 @@ async def ws_audio_endpoint(ws: WebSocket,
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await wsman.connect(ws)
+    _emit({"type": "ws_clients", "count": len(wsman._clients)})
 
     async def _keepalive():
         # 10 s interval — tight enough that Android's WiFi power-save has less
@@ -2768,6 +2770,7 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         ka.cancel()
         await wsman.disconnect(ws)
+        _emit({"type": "ws_clients", "count": len(wsman._clients)})
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
