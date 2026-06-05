@@ -879,10 +879,17 @@ function onMsg(m) {
     });
     renderAll();
     autoSelect();
-    // Resume audio without overlay if the user had it enabled before the refresh
+    // Resume audio on reconnect / page load.
+    // For the native app S.audioOn is always true, so this also handles the
+    // initial auto-start without any user interaction required.
     if (S.audioOn && !audMount) {
       const target = S.locked || S.playing || (Object.values(S.streams).find(s=>s.connected)||{}).mount;
-      if (target) switchAudio(target);
+      if (target) {
+        // Resume AudioContext before play() — required when AudioContext was
+        // created before a user gesture (native app autoplay path).
+        if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume().catch(()=>{});
+        switchAudio(target);
+      }
       updateAudioUI();
     }
   } else if (m.type === 'freq_change') {
@@ -1321,26 +1328,31 @@ function initControls() {
     document.getElementById('aWakeLockRow').style.display = '';
 }
 
-// ── Screen Wake Lock (Android keep-alive) ─────────────────────────────────────
-// Keeping the screen on is the only fully-reliable PWA way to prevent Android
-// from killing the connection during silence periods between transmissions.
-// The proper long-term fix is a TWA (Trusted Web Activity) wrapper that can
-// hold a FOREGROUND_SERVICE_MEDIA_PLAYBACK permission without the screen.
+// ── Screen Wake Lock (Android browser keep-alive only) ────────────────────────
+// Only used on the Android browser path.  The native app has a WiFi lock +
+// foreground service — those are more effective and don't drain the battery
+// by keeping the screen on.
 let _wakeLock = null;
+let _wakeLockWanted = false;  // tracks user intent; prevents re-acquire after manual release
+
 async function _acquireWakeLock() {
   if (!('wakeLock' in navigator) || _wakeLock) return;
+  _wakeLockWanted = true;
   try {
     _wakeLock = await navigator.wakeLock.request('screen');
     _wakeLock.addEventListener('release', () => {
       _wakeLock = null;
-      // Re-acquire if audio is still on and the page is visible (e.g. OS took it back)
-      if (S.audioOn && document.visibilityState === 'visible')
+      // Only re-acquire if the USER still wants it (not a manual release)
+      // AND the OS released it involuntarily (screen-on restoration on resume).
+      if (_wakeLockWanted && S.audioOn && document.visibilityState === 'visible')
         setTimeout(_acquireWakeLock, 1000);
     });
-    document.getElementById('aWakeLock').checked = true;
+    const cb = document.getElementById('aWakeLock');
+    if (cb) cb.checked = true;
   } catch (_) {}
 }
 function _releaseWakeLock() {
+  _wakeLockWanted = false;   // user explicitly turned it off — don't re-acquire
   if (_wakeLock) { _wakeLock.release(); _wakeLock = null; }
   const cb = document.getElementById('aWakeLock');
   if (cb) cb.checked = false;
@@ -1366,6 +1378,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+// Native app: audio is always on — it's the entire purpose of the app.
+// Skip the "tap to enable audio" overlay entirely.
+if (_isNativeApp) {
+  S.audioOn = true;
+  localStorage.setItem('a_on', 'true');
+}
+
 _initAudEl();   // pre-create the element so the /stream connection opens early
 connect();
 initControls();
