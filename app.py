@@ -484,16 +484,21 @@ function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Audio (HTTP stream → HTMLAudioElement → Web Audio filter chain) ────────────
+// ── Audio ─────────────────────────────────────────────────────────────────────
 //
-// The browser fetches /stream (a never-ending WAV) via a plain <audio> element.
-// Android's media system treats HTMLAudioElement playback as native media, which
-// keeps the renderer alive and WebSockets open through screen lock — the same
-// mechanism used by apps like Rdio Scanner.
+// Three paths depending on the runtime environment:
 //
-// createMediaElementSource() routes the element's output through the Web Audio
-// graph so the HP/LP filters, volume, and squelch-tail gate all still apply.
-// Graph: <audio src=/stream> → MediaElementSource → HP → LP → Vol → Gate → out
+//  1. Native Android app  (window.AndroidNative defined)
+//     <audio src=/stream> → Web Audio graph → HP → LP → Vol → Gate → out
+//     The native app has a WiFi wake lock + foreground service so the simple
+//     WAV stream is reliable.  Web Audio BiquadFilters handle HP/LP in-browser.
+//
+//  2. Desktop browser
+//     Same as native — <audio src=/stream> + Web Audio graph.
+//
+//  3. Android browser / TWA  (isAndroid && not native app)
+//     MSE + WebSocket + ffmpeg.  Retained as fallback for browser users where
+//     Android's background restrictions still apply.
 
 // ── Audio settings (persisted in localStorage) ────────────────────────────────
 const A = {
@@ -502,34 +507,90 @@ const A = {
   lp:     parseInt(  localStorage.getItem('a_lp')     ?? '3000', 10),
   sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
 };
-let _sqActive  = true;   // tracks last squelch state to drive gate transitions
-let _gateRaf   = null;   // requestAnimationFrame handle for squelch-tail fade
-let _gateGain  = 1.0;    // 0–1 multiplier applied on top of A.vol
+
+// Detect native Android app via JavascriptInterface injected by MainActivity
+const _isNativeApp = typeof window.AndroidNative !== 'undefined';
+const _isAndroidBrowser = /Android/i.test(navigator.userAgent) && !_isNativeApp;
+
+let _sqActive  = true;
+let _gateRaf   = null;
+let _gateGain  = 1.0;
 let audMount   = null;
-let _audEl     = null;   // HTMLAudioElement
-let _mseAbort  = null;   // AbortController for the MSE fetch loop
-let _mseActive = false;  // true when feeding the element via MediaSource
-let _mseSb     = null;   // current MSE SourceBuffer — exposed for buffer-depth reads
+let _audEl     = null;
+
+// Web Audio API nodes (used by native app + desktop paths)
+let _audioCtx  = null;
+let _hpNode    = null;   // BiquadFilter highpass
+let _lpNode    = null;   // BiquadFilter lowpass
+let _volNode   = null;   // GainNode — user volume
+let _gateNode  = null;   // GainNode — squelch gate
+
+// MSE / WebSocket path variables (Android browser only)
+let _mseAbort  = null;
+let _mseActive = false;
+let _mseSb     = null;
 let _retries   = 0;
 let _stallTimer = null;
 
+function _initWebAudioGraph() {
+  if (_audioCtx) return;
+  try {
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const src = _audioCtx.createMediaElementSource(_audEl);
+    _hpNode  = _audioCtx.createBiquadFilter();
+    _hpNode.type = 'highpass';
+    _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent when off
+    _lpNode  = _audioCtx.createBiquadFilter();
+    _lpNode.type = 'lowpass';
+    _lpNode.frequency.value = A.lp;
+    _volNode  = _audioCtx.createGain();
+    _volNode.gain.value  = A.vol;
+    _gateNode = _audioCtx.createGain();
+    _gateNode.gain.value = _gateGain;
+    src.connect(_hpNode);
+    _hpNode.connect(_lpNode);
+    _lpNode.connect(_volNode);
+    _volNode.connect(_gateNode);
+    _gateNode.connect(_audioCtx.destination);
+  } catch (e) {
+    // Web Audio not available — fall back to _audEl.volume control
+    _audioCtx = null;
+  }
+}
+
 function _applyVolume() {
-  if (_audEl) _audEl.volume = Math.min(1, Math.max(0, A.vol * _gateGain));
+  if (_volNode && _gateNode) {
+    _volNode.gain.value  = A.vol;
+    _gateNode.gain.value = _gateGain;
+  } else if (_audEl) {
+    _audEl.volume = Math.min(1, Math.max(0, A.vol * _gateGain));
+  }
 }
 
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
   if (open) {
     _gateGain = 1.0;
-    _applyVolume();
-  } else {
-    const start = performance.now(), startGain = _gateGain, RAMP = 50;
-    const step = ts => {
-      _gateGain = Math.max(0, startGain * (1 - (ts - start) / RAMP));
+    if (_gateNode && _audioCtx) {
+      _gateNode.gain.cancelScheduledValues(_audioCtx.currentTime);
+      _gateNode.gain.setTargetAtTime(1.0, _audioCtx.currentTime, 0.01);
+    } else {
       _applyVolume();
-      _gateRaf = _gateGain > 0 ? requestAnimationFrame(step) : null;
-    };
-    _gateRaf = requestAnimationFrame(step);
+    }
+  } else {
+    _gateGain = 0;
+    if (_gateNode && _audioCtx) {
+      _gateNode.gain.cancelScheduledValues(_audioCtx.currentTime);
+      _gateNode.gain.setTargetAtTime(0.0, _audioCtx.currentTime, 0.02);
+    } else {
+      const start = performance.now(), startGain = _gateGain || 1.0, RAMP = 50;
+      const step = ts => {
+        _gateGain = Math.max(0, startGain * (1 - (ts - start) / RAMP));
+        _applyVolume();
+        _gateRaf = _gateGain > 0 ? requestAnimationFrame(step) : null;
+      };
+      _gateRaf = requestAnimationFrame(step);
+    }
   }
 }
 
@@ -539,17 +600,12 @@ function _initAudEl() {
   _audEl.volume = A.vol;
   _audEl.addEventListener('playing', () => { _retries = 0; clearTimeout(_stallTimer); });
   _audEl.addEventListener('pause', () => {
-    // Chrome may spontaneously pause the element during battery-optimization
-    // events or when it suspects the audio is idle.  Auto-resume immediately
-    // as long as the user hasn't explicitly turned audio off.
     if (!S.audioOn) return;
     _audEl.play().catch(() => {});
   });
   _audEl.addEventListener('stalled', () => {
     if (!S.audioOn) return;
-    // MSE seeks (canplay jump, watchdog) cause spurious stalled events — the
-    // watchdog and fetch error path handle real MSE failures, so skip here.
-    if (_mseActive) return;
+    if (_mseActive) return;   // MSE watchdog handles recovery
     clearTimeout(_stallTimer);
     _stallTimer = setTimeout(_reloadStream, 4000);
   });
@@ -559,15 +615,16 @@ function _initAudEl() {
     setTimeout(_reloadStream, Math.min(1000 * _retries, 30000));
   };
 
-  const isAndroid = /Android/i.test(navigator.userAgent);
-  if (isAndroid && window.MediaSource && MediaSource.isTypeSupported('audio/mpeg')) {
-    // MSE path: we feed the SourceBuffer manually so Chrome buffers only
-    // ~1 s instead of the 10+ s it holds for plain HTTP audio streams.
-    // The <audio> element remains native so Android grants media focus.
+  if (_isAndroidBrowser && window.MediaSource && MediaSource.isTypeSupported('audio/mpeg')) {
+    // Android browser / TWA: use MSE + WebSocket + ffmpeg to work around
+    // browser background restrictions.
     _mseActive = true;
     _mseConnect();
   } else {
-    _audEl.src = isAndroid ? '/stream.mp3' : '/stream';
+    // Native app + desktop: simple WAV stream with Web Audio graph for
+    // HP/LP filtering, volume, and squelch gate.
+    _audEl.src = '/stream';
+    _initWebAudioGraph();
   }
 }
 
@@ -721,15 +778,18 @@ function openAudioStream(mount) {
   _gateGain = 1.0;
   _initAudEl();
   _applyVolume();
+  // Resume AudioContext if suspended (browsers require user gesture before
+  // AudioContext can run; this call is inside a user-gesture handler).
+  if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
   if (_audEl.paused) {
     _audEl.play().catch(() => {
       document.getElementById('overlay').classList.remove('hidden');
     });
   }
   _updateMediaSession(true);
-  // On Android, auto-acquire wake lock so the screen stays on and Android
-  // cannot apply Doze mode restrictions.  User can disable in audio settings.
-  if (/Android/i.test(navigator.userAgent)) _acquireWakeLock();
+  // Wake lock: only needed for Android browser path — native app has WiFi lock
+  // and foreground service which are far more effective.
+  if (_isAndroidBrowser) _acquireWakeLock();
   updateAudioUI();
 }
 
@@ -1226,17 +1286,21 @@ function setVol(v) {
 function setHP(v) {
   A.hp = parseInt(v, 10);
   localStorage.setItem('a_hp', A.hp);
-  // On the MSE path the filter runs in ffmpeg server-side; reconnect the
-  // stream so the new cutoff takes effect immediately.
-  if (_mseActive && S.audioOn) _mseConnect();
+  if (_hpNode) {
+    _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent
+  } else if (_mseActive && S.audioOn) {
+    _mseConnect();   // ffmpeg path: reconnect with new filter param
+  }
 }
 function setLP(v) {
   A.lp = parseInt(v, 10);
   localStorage.setItem('a_lp', A.lp);
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
-  // On the MSE path the filter runs in ffmpeg server-side; reconnect the
-  // stream so the new cutoff takes effect immediately.
-  if (_mseActive && S.audioOn) _mseConnect();
+  if (_lpNode) {
+    _lpNode.frequency.value = A.lp;
+  } else if (_mseActive && S.audioOn) {
+    _mseConnect();   // ffmpeg path: reconnect with new filter param
+  }
 }
 function setSqTail(v) {
   A.sqtail = v;
@@ -1251,8 +1315,9 @@ function initControls() {
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
   document.getElementById('aHP').value = String(A.hp);
   document.getElementById('aSqTail').checked = A.sqtail;
-  // Show Wake Lock toggle only on Android where background killing is a problem
-  if (/Android/i.test(navigator.userAgent) && 'wakeLock' in navigator)
+  // Wake Lock toggle: only useful for Android browser path.
+  // Native app has a proper WiFi lock + foreground service; no screen lock needed.
+  if (_isAndroidBrowser && 'wakeLock' in navigator)
     document.getElementById('aWakeLockRow').style.display = '';
 }
 
