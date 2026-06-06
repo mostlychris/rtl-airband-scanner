@@ -2547,7 +2547,13 @@ async def audio_stream(request: Request):
     # short enough that real audio chunks — which arrive every ~250 ms when the
     # scanner is transmitting — always beat the timeout and no silence is
     # injected mid-transmission.
-    silence = bytes(int(rate * 2 * 0.5))   # 500 ms
+    # Use pre-generated ±100 LSB noise (~-50 dB) rather than pure zeros.
+    # Zero PCM bytes are valid silence but some Android power-management
+    # subsystems can detect all-zero audio output and throttle the audio
+    # pipeline.  Faint noise is below any audible threshold but reads as
+    # genuine media output to keep the AudioTrack and CPU wake lock active.
+    silence = (_AUDIO_KEEPALIVE * ((int(rate * 2 * 0.5) // len(_AUDIO_KEEPALIVE)) + 1)
+               )[:int(rate * 2 * 0.5)]   # 500 ms of ±100 LSB noise
 
     async def generate():
         yield _wav_header(rate)
