@@ -2542,12 +2542,12 @@ async def audio_stream(request: Request):
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    # Send up to 1 s of silence when the queue is empty (squelch closed / no
-    # signal).  1 s is long enough that the <audio> element never stalls, and
-    # short enough that real audio chunks — which arrive every ~250 ms when the
-    # scanner is transmitting — always beat the timeout and no silence is
-    # injected mid-transmission.
-    silence = bytes(int(rate * 2 * 0.5))   # 500 ms of zero PCM (squelch closed)
+    # 100 ms silence chunks sent every 100 ms keep the stream at exactly the
+    # correct data rate (rate * 2 bytes/s) so AudioTrack on Android never
+    # underruns.  Previously 500 ms every ~1 s delivered only ~50 % of the
+    # required bytes, draining the AudioTrack buffer and causing static bursts.
+    # The web app's buffered <audio> element is unaffected by smaller chunks.
+    silence = bytes(int(rate * 2 * 0.1))   # 100 ms of zero PCM
 
     async def generate():
         yield _wav_header(rate)
@@ -2556,7 +2556,7 @@ async def audio_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    data = await asyncio.wait_for(q.get(), timeout=1.0)
+                    data = await asyncio.wait_for(q.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     data = silence
                 yield data
