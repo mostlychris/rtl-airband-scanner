@@ -86,16 +86,6 @@ def _ctcss_analyze(buf: np.ndarray, sample_rate: float,
     return gated, detected
 
 
-# Silence chunk used when no audio signal is active.
-# Android measures actual audio output energy to decide whether Chrome's media
-# foreground service stays active.  ±1 LSB (~-90 dB) is below Android's
-# detection threshold.  ±100 (~-50 dB) is a faint hiss well below normal
-# speech levels but registers as real audio output — keeping the foreground
-# service alive between transmissions.
-_rng = np.random.default_rng(0)
-_AUDIO_KEEPALIVE = _rng.integers(-100, 101, size=int(AUDIO_RATE * 0.1),
-                                 dtype=np.int16).tobytes()   # 100 ms ~-50 dB noise
-
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
