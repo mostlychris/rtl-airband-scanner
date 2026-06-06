@@ -21,7 +21,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
 VERSION    = "2.6.6"
-AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
+AUDIO_RATE = 48000   # PCM output rate; default hw_rate = 240,000 Hz (5× oversample)
+                    # 48 kHz matches the Android HAL native rate so AudioTrack
+                    # needs no resampling — which eliminates HAL-introduced noise.
 
 
 def _wav_header(sample_rate: int = AUDIO_RATE) -> bytes:
