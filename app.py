@@ -2550,6 +2550,39 @@ async def debug():
 
 
 
+@app.get("/stream/tone")
+async def audio_tone(request: Request):
+    """Diagnostic: streams a pure 1 kHz sine wave instead of scanner audio.
+    Open https://<host>/stream/tone in the Android app (paste in browser, or
+    temporarily point AndroidNative.startAudio at this URL) to test whether
+    AudioTrack plays a clean tone.  Clean tone = noise is in the scanner PCM.
+    Noisy tone = AudioTrack or HAL is adding noise on this device."""
+    rate = AUDIO_RATE
+    t = 0.0
+    freq = 1000.0
+    chunk_samples = rate // 10   # 100 ms chunks
+    silence = bytes(chunk_samples * 2)
+
+    async def generate():
+        nonlocal t
+        yield _wav_header(rate)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                phase = np.linspace(t, t + chunk_samples, chunk_samples,
+                                    endpoint=False, dtype=np.float64)
+                t += chunk_samples
+                sine = (np.sin(2 * np.pi * freq / rate * phase) * 16000).astype(np.int16)
+                yield sine.tobytes()
+                await asyncio.sleep(0.1)
+        finally:
+            pass
+
+    return StreamingResponse(generate(), media_type="audio/wav",
+                             headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/stream")
 async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
     """HTTP audio stream — serves a never-ending WAV.
