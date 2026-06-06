@@ -954,7 +954,13 @@ function onMsg(m) {
     // the gate by the current buffer depth so it fires at the right point in the
     // audio timeline rather than 2 s early (which would cut voice, then let the
     // noisy tail play unmuted once the buffer catches up).
-    if (A.sqtail && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
+    // Gate fires when: (a) user enabled squelch tail suppression, OR
+    // (b) native app — AudioTrack has no LP/HP client-side filtering so FM
+    // discriminator noise during the hold period is clearly audible as static.
+    // The browser's LP BiquadFilter attenuates this noise enough to be
+    // inaudible even without the gate; AudioTrack gets raw PCM.
+    const _needGate = A.sqtail || _isNativeApp;
+    if (_needGate && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
       _sqActive = m.active;
       const active = m.active;
       if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
