@@ -565,9 +565,25 @@ function _applyVolume() {
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
   if (_isNativeApp) {
-    // Native path: instant gate via setVolume (no Web Audio graph)
-    _gateGain = open ? 1.0 : 0.0;
-    _applyVolume();
+    // Native path: no Web Audio GainNode, so ramp setVolume() over 20 ms
+    // using setTimeout.  Instant transitions (the old approach) create a
+    // waveform discontinuity at the AudioTrack write position that sounds
+    // like a click/pop inside the audio — identical in character to what
+    // the browser's setTargetAtTime prevents.
+    const from = _gateGain;
+    const to   = open ? 1.0 : 0.0;
+    _gateGain  = to;   // update immediately so _applyVolume() reads the new value
+    const STEPS = 10, STEP_MS = 2;  // 20 ms total ramp
+    for (let i = 1; i <= STEPS; i++) {
+      (function(step) {
+        setTimeout(function() {
+          const g = from + (to - from) * step / STEPS;
+          if (typeof window.AndroidNative !== 'undefined') {
+            window.AndroidNative.setVolume(A.vol * Math.max(0, Math.min(1, g)));
+          }
+        }, step * STEP_MS);
+      })(i);
+    }
     return;
   }
   if (open) {
