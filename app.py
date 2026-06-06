@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json, asyncio, threading, argparse, uvicorn, struct
 import numpy as np
-from scipy.signal import lfilter, firwin
+from scipy.signal import lfilter, firwin, butter, lfilter_zi
 from pathlib import Path
 from datetime import datetime
 from collections import deque
@@ -782,11 +782,12 @@ function openAudioStream(mount) {
   _sqActive = true;
   _gateGain = 1.0;
   if (_isNativeApp) {
-    // Hand off to ScannerService — MediaPlayer handles connection, reconnect,
-    // WiFi lock, and foreground service independently of the WebView.
-    // Use /stream (WAV PCM) — no ffmpeg startup latency, MediaPlayer handles
-    // the infinite-length WAV header used for live streaming.
-    window.AndroidNative.startAudio(location.origin + '/stream');
+    // Hand off to ScannerService — AudioTrack handles PCM directly.
+    // Pass the user's HP/LP settings as query params so the server applies
+    // the same Butterworth IIR filtering the browser does via Web Audio API.
+    // Without this, raw FM demodulated noise above ~3 kHz is audible on
+    // AudioTrack (no Web Audio graph), producing open-squelch static bursts.
+    window.AndroidNative.startAudio(location.origin + '/stream?lp=' + A.lp + '&hp=' + A.hp);
     _applyVolume();
     _updateMediaSession(true);
     updateAudioUI();
@@ -1330,8 +1331,9 @@ function setHP(v) {
     _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent
   } else if (_mseActive && S.audioOn) {
     _mseConnect();   // ffmpeg path: reconnect with new filter param
+  } else if (_isNativeApp && audMount) {
+    openAudioStream(audMount);  // native: reconnect stream with updated ?hp= param
   }
-  // Native app: WAV stream has no server-side filter params; HP/LP not supported
 }
 function setLP(v) {
   A.lp = parseInt(v, 10);
@@ -1341,8 +1343,9 @@ function setLP(v) {
     _lpNode.frequency.value = A.lp;
   } else if (_mseActive && S.audioOn) {
     _mseConnect();   // ffmpeg path: reconnect with new filter param
+  } else if (_isNativeApp && audMount) {
+    openAudioStream(audMount);  // native: reconnect stream with updated ?lp= param
   }
-  // Native app: WAV stream has no server-side filter params; HP/LP not supported
 }
 function setSqTail(v) {
   A.sqtail = v;
@@ -2526,18 +2529,50 @@ async def debug():
 
 
 @app.get("/stream")
-async def audio_stream(request: Request):
-    """HTTP audio stream — serves a never-ending WAV so browsers treat the
-    tab as native media (required for background playback on Android)."""
+async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
+    """HTTP audio stream — serves a never-ending WAV.
+
+    Optional query params mirror the browser's Web Audio BiquadFilters so
+    AudioTrack clients (native Android app) can request the same filtering
+    the browser applies in-client.  Pass the user's current settings:
+      hp  — highpass cutoff Hz (0 = off)
+      lp  — lowpass  cutoff Hz (0 = off; browser default is 3000 Hz)
+
+    The browser does its own filtering with Web Audio API, so it should
+    request lp=0&hp=0 (the default) and filter client-side as before.
+    The native Android app has no Web Audio graph, so it should request
+    lp=3000 (or whatever A.lp is) to get the same tonal character.
+    """
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    # 100 ms silence chunks sent every 100 ms keep the stream at exactly the
-    # correct data rate (rate * 2 bytes/s) so AudioTrack on Android never
-    # underruns.  Previously 500 ms every ~1 s delivered only ~50 % of the
-    # required bytes, draining the AudioTrack buffer and causing static bursts.
-    # The web app's buffered <audio> element is unaffected by smaller chunks.
     silence = bytes(int(rate * 2 * 0.1))   # 100 ms of zero PCM
+
+    # Build IIR filter chain when the caller requests HP/LP.
+    # We use 4th-order Butterworth — same order as the browser's BiquadFilter
+    # cascade.  Filter state (zi) is kept across chunks so there are no
+    # discontinuities at chunk boundaries.
+    nyq = rate / 2.0
+    _b_hp, _a_hp, _zi_hp = None, None, None
+    _b_lp, _a_lp, _zi_lp = None, None, None
+    if hp > 0 and hp < nyq:
+        _b_hp, _a_hp = butter(2, hp / nyq, btype='high')
+        _zi_hp = lfilter_zi(_b_hp, _a_hp) * 0.0   # start at zero
+    if lp > 0 and lp < nyq:
+        _b_lp, _a_lp = butter(2, lp / nyq, btype='low')
+        _zi_lp = lfilter_zi(_b_lp, _a_lp) * 0.0
+
+    def _apply_filters(raw: bytes) -> bytes:
+        """Apply HP/LP IIR filters in-place and return filtered PCM bytes."""
+        nonlocal _zi_hp, _zi_lp
+        if _b_hp is None and _b_lp is None:
+            return raw
+        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+        if _b_hp is not None:
+            pcm, _zi_hp = lfilter(_b_hp, _a_hp, pcm, zi=_zi_hp)
+        if _b_lp is not None:
+            pcm, _zi_lp = lfilter(_b_lp, _a_lp, pcm, zi=_zi_lp)
+        return np.clip(pcm, -32768, 32767).astype(np.int16).tobytes()
 
     async def generate():
         yield _wav_header(rate)
@@ -2549,7 +2584,7 @@ async def audio_stream(request: Request):
                     data = await asyncio.wait_for(q.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     data = silence
-                yield data
+                yield _apply_filters(data)
         finally:
             try: _audio_clients.remove(q)
             except ValueError: pass
