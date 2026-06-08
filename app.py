@@ -552,8 +552,9 @@ function _initWebAudioGraph() {
 
 function _applyVolume() {
   if (_isNativeApp) {
-    // Route to ScannerService — it owns the MediaPlayer
-    window.AndroidNative.setVolume(A.vol * _gateGain);
+    // Route to ScannerService — volume only, no gate factor.
+    // The gate is a no-op for native (PCM stream handles squelch server-side).
+    window.AndroidNative.setVolume(A.vol);
   } else if (_volNode && _gateNode) {
     _volNode.gain.value  = A.vol;
     _gateNode.gain.value = _gateGain;
@@ -565,25 +566,12 @@ function _applyVolume() {
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
   if (_isNativeApp) {
-    // Native path: no Web Audio GainNode, so ramp setVolume() over 20 ms
-    // using setTimeout.  Instant transitions (the old approach) create a
-    // waveform discontinuity at the AudioTrack write position that sounds
-    // like a click/pop inside the audio — identical in character to what
-    // the browser's setTargetAtTime prevents.
-    const from = _gateGain;
-    const to   = open ? 1.0 : 0.0;
-    _gateGain  = to;   // update immediately so _applyVolume() reads the new value
-    const STEPS = 10, STEP_MS = 2;  // 20 ms total ramp
-    for (let i = 1; i <= STEPS; i++) {
-      (function(step) {
-        setTimeout(function() {
-          const g = from + (to - from) * step / STEPS;
-          if (typeof window.AndroidNative !== 'undefined') {
-            window.AndroidNative.setVolume(A.vol * Math.max(0, Math.min(1, g)));
-          }
-        }, step * STEP_MS);
-      })(i);
-    }
+    // Native path: the /stream PCM already contains silence when squelch is
+    // closed — the scanner only pushes audio bytes when the gate is open.
+    // Calling setVolume() here to simulate a gate is wrong: it mangles clean
+    // audio by driving AudioTrack volume to 0 mid-stream, causing the
+    // beep/boop artifacts we diagnosed.  Do nothing; volume stays at A.vol.
+    _gateGain = 1.0;
     return;
   }
   if (open) {
