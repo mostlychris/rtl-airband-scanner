@@ -2554,6 +2554,8 @@ async def audio_tone(request: Request):
     async def generate():
         nonlocal t
         yield _wav_header(rate)
+        import time as _time
+        next_send = _time.monotonic()
         try:
             while True:
                 if await request.is_disconnected():
@@ -2563,7 +2565,12 @@ async def audio_tone(request: Request):
                 t += chunk_samples
                 sine = (np.sin(2 * np.pi * freq / rate * phase) * 16000).astype(np.int16)
                 yield sine.tobytes()
-                await asyncio.sleep(0.1)
+                # Pace to real-time accounting for elapsed work time so drift
+                # doesn't accumulate into long gaps that cause underruns.
+                next_send += chunk_samples / rate
+                delay = next_send - _time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
         finally:
             pass
 
@@ -2585,6 +2592,8 @@ async def audio_tone48(request: Request):
     async def generate():
         nonlocal t
         yield _wav_header(rate)
+        import time as _time
+        next_send = _time.monotonic()
         try:
             while True:
                 if await request.is_disconnected():
@@ -2594,7 +2603,10 @@ async def audio_tone48(request: Request):
                 t += chunk_samples
                 sine = (np.sin(2 * np.pi * freq / rate * phase) * 16000).astype(np.int16)
                 yield sine.tobytes()
-                await asyncio.sleep(0.1)
+                next_send += chunk_samples / rate
+                delay = next_send - _time.monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
         finally:
             pass
 
