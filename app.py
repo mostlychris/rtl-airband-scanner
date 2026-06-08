@@ -791,7 +791,7 @@ function openAudioStream(mount) {
     // the same Butterworth IIR filtering the browser does via Web Audio API.
     // Without this, raw FM demodulated noise above ~3 kHz is audible on
     // AudioTrack (no Web Audio graph), producing open-squelch static bursts.
-    window.AndroidNative.startAudio(location.origin + '/stream');
+    window.AndroidNative.startAudio(location.origin + '/stream?lp=' + A.lp + '&hp=' + A.hp);
     _applyVolume();
     _updateMediaSession(true);
     updateAudioUI();
