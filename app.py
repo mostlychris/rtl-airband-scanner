@@ -2632,7 +2632,13 @@ async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
     rate = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    silence = bytes(int(rate * 2 * 0.1))   # 100 ms of zero PCM
+    # Silence timeout must be LONGER than the scanner's audio chunk rate
+    # (~50 ms) so silence is never injected mid-transmission.  The asyncio
+    # event loop can be delayed 100-400 ms by scanner callbacks; a 500 ms
+    # timeout absorbs that jitter.  Silence chunk size matches the timeout so
+    # the stream delivers the correct byte rate (rate*2 bytes/s) during
+    # squelch-closed periods without starving AudioTrack.
+    silence = bytes(int(rate * 2 * 0.5))   # 500 ms of zero PCM
 
     # Build IIR filter chain when the caller requests HP/LP.
     # We use 4th-order Butterworth — same order as the browser's BiquadFilter
@@ -2667,7 +2673,7 @@ async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
                 if await request.is_disconnected():
                     break
                 try:
-                    data = await asyncio.wait_for(q.get(), timeout=0.1)
+                    data = await asyncio.wait_for(q.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     data = silence
                 yield _apply_filters(data)
