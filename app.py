@@ -2583,6 +2583,37 @@ async def audio_tone(request: Request):
                              headers={"Cache-Control": "no-cache"})
 
 
+@app.get("/stream/tone48")
+async def audio_tone48(request: Request):
+    """Diagnostic: same pure 1 kHz sine wave as /stream/tone but at 48 kHz.
+    Use with a 48 kHz AudioTrack to test whether 24→48 kHz HAL resampling is
+    the noise source.  If /stream/tone (24 kHz) sounds noisy but this is clean,
+    the device HAL dislikes 24 kHz input."""
+    rate = 48000
+    t = 0.0
+    freq = 1000.0
+    chunk_samples = rate // 10   # 100 ms chunks at 48 kHz
+
+    async def generate():
+        nonlocal t
+        yield _wav_header(rate)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                phase = np.linspace(t, t + chunk_samples, chunk_samples,
+                                    endpoint=False, dtype=np.float64)
+                t += chunk_samples
+                sine = (np.sin(2 * np.pi * freq / rate * phase) * 16000).astype(np.int16)
+                yield sine.tobytes()
+                await asyncio.sleep(0.1)
+        finally:
+            pass
+
+    return StreamingResponse(generate(), media_type="audio/wav",
+                             headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/stream")
 async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
     """HTTP audio stream — serves a never-ending WAV.
