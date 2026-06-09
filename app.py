@@ -2676,28 +2676,16 @@ async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
             pcm, _zi_lp = lfilter(_b_lp, _a_lp, pcm, zi=_zi_lp)
         return np.clip(pcm, -32768, 32767).astype(np.int16).tobytes()
 
-    import logging as _logging
-    _slog = _logging.getLogger("stream.pcm")
-
     async def generate():
         yield _wav_header(rate)
-        chunk_n = 0
         try:
             while True:
                 if await request.is_disconnected():
                     break
-                is_silence = False
                 try:
                     data = await asyncio.wait_for(q.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     data = silence
-                    is_silence = True
-                chunk_n += 1
-                pcm_arr = np.frombuffer(data, dtype=np.int16)
-                rms = float(np.sqrt(np.mean(pcm_arr.astype(np.float32)**2)))
-                _slog.info("chunk %d  len=%d  rms=%.1f  %s",
-                           chunk_n, len(data), rms,
-                           "SILENCE-TIMEOUT" if is_silence else "audio")
                 yield _apply_filters(data)
         finally:
             try: _audio_clients.remove(q)
