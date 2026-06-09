@@ -552,9 +552,7 @@ function _initWebAudioGraph() {
 
 function _applyVolume() {
   if (_isNativeApp) {
-    // Route to ScannerService — volume only, no gate factor.
-    // The gate is a no-op for native (PCM stream handles squelch server-side).
-    window.AndroidNative.setVolume(A.vol);
+    window.AndroidNative.setVolume(A.vol * _gateGain);
   } else if (_volNode && _gateNode) {
     _volNode.gain.value  = A.vol;
     _gateNode.gain.value = _gateGain;
@@ -566,12 +564,24 @@ function _applyVolume() {
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
   if (_isNativeApp) {
-    // Native path: the /stream PCM already contains silence when squelch is
-    // closed — the scanner only pushes audio bytes when the gate is open.
-    // Calling setVolume() here to simulate a gate is wrong: it mangles clean
-    // audio by driving AudioTrack volume to 0 mid-stream, causing the
-    // beep/boop artifacts we diagnosed.  Do nothing; volume stays at A.vol.
-    _gateGain = 1.0;
+    // Native path: smooth 40 ms volume ramp via AudioTrack.setStereoVolume().
+    // Only reached when A.sqtail is enabled (_needGate = A.sqtail).
+    // setVolume() adjusts the HAL volume multiplier and does not touch the
+    // PCM byte stream, so it is safe alongside the 2-byte alignment fix.
+    const from = _gateGain;
+    const to   = open ? 1.0 : 0.0;
+    _gateGain  = to;
+    const STEPS = 10, STEP_MS = 4;  // 40 ms total
+    for (let i = 1; i <= STEPS; i++) {
+      (function(step) {
+        setTimeout(function() {
+          if (typeof window.AndroidNative !== 'undefined') {
+            const g = from + (to - from) * step / STEPS;
+            window.AndroidNative.setVolume(A.vol * Math.max(0, Math.min(1, g)));
+          }
+        }, step * STEP_MS);
+      })(i);
+    }
     return;
   }
   if (open) {
@@ -963,7 +973,7 @@ function onMsg(m) {
     // discriminator noise during the hold period is clearly audible as static.
     // The browser's LP BiquadFilter attenuates this noise enough to be
     // inaudible even without the gate; AudioTrack gets raw PCM.
-    const _needGate = A.sqtail || _isNativeApp;
+    const _needGate = A.sqtail;
     if (_needGate && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
       _sqActive = m.active;
       const active = m.active;
