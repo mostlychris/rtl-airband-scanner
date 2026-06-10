@@ -522,6 +522,17 @@ let _sqActive  = true;
 let _gateRaf   = null;
 let _gateGain  = 1.0;
 let audMount   = null;
+
+// Returns how many milliseconds the MSE audio lags behind real-time.
+// Used to delay UI events so the display matches what is actually heard.
+// Returns 0 on the native-app and desktop AudioWorklet paths (no MSE buffer).
+function _audioLagMs() {
+  if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
+    return Math.max(0,
+      (_mseSb.buffered.end(_mseSb.buffered.length - 1) - _audEl.currentTime) * 1000);
+  }
+  return 0;
+}
 let _audEl     = null;
 
 // Web Audio API nodes (used by native app + desktop paths)
@@ -944,38 +955,48 @@ function onMsg(m) {
     s.activeSince   = m.time;
     s.lastError     = null;
     s.detectedCTCSS = null;   // clear on each new frequency
-    updateCard(m.mount, true);
-    pushActivity(m.name, m.freq, m.label, m.time);
+    // Delay the visual update to match when the buffered audio is actually heard.
+    const _fcLag = _audioLagMs();
+    const _doFreqChange = () => { updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time); };
+    if (_fcLag > 100) setTimeout(_doFreqChange, _fcLag); else _doFreqChange();
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
   } else if (m.type === 'freq_clear') {
     const s = S.streams[m.mount]; if (!s) return;
     s.activeFreq    = null;
     s.activeSince   = null;
     s.detectedCTCSS = null;
-    updateCard(m.mount, true);
+    const _fclLag = _audioLagMs();
+    if (_fclLag > 100) setTimeout(() => updateCard(m.mount, true), _fclLag);
+    else updateCard(m.mount, true);
   } else if (m.type === 'signal') {
-    const d = document.getElementById('sqfill_' + eid(m.mount));
-    if (d) {
-      const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
-      d.style.width = pct + '%';
-      d.className = 'sqfill' + (m.active ? ' active' : '');
-    }
-    // Update detected CTCSS tone display in-place (avoids full card re-render)
-    const s = S.streams[m.mount];
-    if (s && m.ctcss !== undefined) {
-      const prev = s.detectedCTCSS;
-      s.detectedCTCSS = m.ctcss || null;
-      if (s.detectedCTCSS !== prev) {
-        const el = document.getElementById('sc_ctcss_' + eid(m.mount));
-        if (el) {
-          const cpl = s.channelPL || {};
-          const configured = s.activeFreq && cpl[s.activeFreq];
-          el.textContent  = s.detectedCTCSS ? ('◈ ' + s.detectedCTCSS + ' Hz') : '';
-          el.className    = 'sc-ctcss' + (s.detectedCTCSS
-            ? (configured ? ' match' : ' info') : '');
+    // All signal-bar and CTCSS updates are delayed by the MSE audio lag so the
+    // display changes at the same moment the listener actually hears the signal.
+    const _sigLag = _audioLagMs();
+    const _doSignalUI = () => {
+      const d = document.getElementById('sqfill_' + eid(m.mount));
+      if (d) {
+        const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
+        d.style.width = pct + '%';
+        d.className = 'sqfill' + (m.active ? ' active' : '');
+      }
+      // Update detected CTCSS tone display in-place (avoids full card re-render)
+      const s = S.streams[m.mount];
+      if (s && m.ctcss !== undefined) {
+        const prev = s.detectedCTCSS;
+        s.detectedCTCSS = m.ctcss || null;
+        if (s.detectedCTCSS !== prev) {
+          const el = document.getElementById('sc_ctcss_' + eid(m.mount));
+          if (el) {
+            const cpl = s.channelPL || {};
+            const configured = s.activeFreq && cpl[s.activeFreq];
+            el.textContent  = s.detectedCTCSS ? ('◈ ' + s.detectedCTCSS + ' Hz') : '';
+            el.className    = 'sc-ctcss' + (s.detectedCTCSS
+              ? (configured ? ' match' : ' info') : '');
+          }
         }
       }
-    }
+    };
+    if (_sigLag > 100) setTimeout(_doSignalUI, _sigLag); else _doSignalUI();
     // Squelch tail suppression: gate audio closed on signal drop, open on signal open.
     // Only applied to the currently playing mount so background activity is ignored.
     // On the MSE path the audio is buffered ~2 s behind real-time, so we delay
@@ -991,13 +1012,9 @@ function onMsg(m) {
     if (_needGate && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
       _sqActive = m.active;
       const active = m.active;
-      if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
-        const lagMs = Math.max(0,
-          (_mseSb.buffered.end(_mseSb.buffered.length - 1) - _audEl.currentTime) * 1000);
-        setTimeout(() => _setGate(active), lagMs);
-      } else {
-        _setGate(active);
-      }
+      const lagMs = _audioLagMs();
+      if (lagMs > 0) setTimeout(() => _setGate(active), lagMs);
+      else _setGate(active);
     }
   } else if (m.type === 'channels_update') {
     const s = S.streams[m.mount]; if (!s) return;
