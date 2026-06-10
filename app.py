@@ -51,35 +51,49 @@ def _ctcss_analyze(buf: np.ndarray, sample_rate: float,
     """Analyze buf for CTCSS tone presence.
 
     Returns (gated_open, detected_tone):
-      - detected_tone: the standard tone with the highest power if it is
-        dominant over the average (i.e. a tone is clearly present), else None.
+      - detected_tone: the CTCSS tone with clearly dominant power, or None.
       - gated_open: True if no target is configured (target_hz == 0) OR
-        the detected tone matches the configured target.
+        the target tone is dominant over all tones more than 5 Hz away.
 
-    Same dominant-tone logic as RTLSDR-Airband's Goertzel implementation.
+    Uses exact per-tone DFT (not nearest FFT bin) so that closely-spaced
+    tones such as 97.4 Hz and 100.0 Hz are always measured independently.
+    Both the detection display and gating use the same dominance criterion,
+    so a tone shown in the UI will reliably gate the squelch.
     """
     n = len(buf)
-    spectrum = np.abs(np.fft.rfft(buf * np.hanning(n))) ** 2
-    bin_hz = sample_rate / n
+    win     = np.hanning(n)
+    win_buf = buf.astype(np.float64) * win
+    norm    = float(np.dot(win, win))   # sum(win²) — normalises to amplitude²
 
-    def _bin_power(freq: float) -> float:
-        b = min(round(freq / bin_hz), len(spectrum) - 1)
-        return float(spectrum[b])
+    # Vectorised exact DFT at every CTCSS frequency in one matrix multiply.
+    # phases shape: (num_tones, n)
+    tones_arr = np.array(_CTCSS_TONES, dtype=np.float64)
+    t         = np.arange(n, dtype=np.float64) / sample_rate
+    phases    = 2.0 * np.pi * np.outer(tones_arr, t)
+    re        = np.cos(phases) @ win_buf   # (num_tones,)
+    im        = np.sin(phases) @ win_buf
+    powers    = (re * re + im * im) / norm
 
-    tone_powers = [(t, _bin_power(t)) for t in _CTCSS_TONES]
-    avg_power   = sum(p for _, p in tone_powers) / len(tone_powers)
-    best_tone, best_power = max(tone_powers, key=lambda x: x[1])
+    tone_powers = list(zip(_CTCSS_TONES, powers.tolist()))
 
-    detected = best_tone if best_power > avg_power else None
+    def _is_dominant(target: float, tgt_pwr: float) -> bool:
+        """True when tgt_pwr is >= every excluding-tone power AND above their mean."""
+        exc = [p for hz, p in tone_powers if abs(hz - target) >= 5.0]
+        exc.append(tgt_pwr)
+        return tgt_pwr >= max(exc) and tgt_pwr > sum(exc) / len(exc)
+
+    # Detected tone for display — only shown when it also passes the dominance
+    # test, so the UI never reports a tone that the gate would reject.
+    best_idx  = int(np.argmax(powers))
+    best_tone = _CTCSS_TONES[best_idx]
+    detected  = best_tone if _is_dominant(best_tone, float(powers[best_idx])) else None
 
     if target_hz > 0.0:
-        # Gating: target must be the dominant tone
-        target_power = _bin_power(target_hz)
-        all_excluding = [p for t, p in tone_powers if abs(t - target_hz) >= 5.0]
-        all_excluding.append(target_power)
-        avg_ex  = sum(all_excluding) / len(all_excluding)
-        max_ex  = max(all_excluding)
-        gated   = target_power >= max_ex and target_power > avg_ex
+        # Map the configured Hz to the nearest entry in the CTCSS table.
+        tgt_idx  = min(range(len(_CTCSS_TONES)),
+                       key=lambda i: abs(_CTCSS_TONES[i] - target_hz))
+        tgt_pwr  = float(powers[tgt_idx])
+        gated    = _is_dominant(_CTCSS_TONES[tgt_idx], tgt_pwr)
     else:
         gated = True   # no filter configured — always pass
 
