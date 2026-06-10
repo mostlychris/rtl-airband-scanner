@@ -1959,6 +1959,11 @@ class RTLFMScanner:
                 ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
                 ctcss_detected: bool = (pl_tone == 0.0)  # pessimistic for PL channels; True when no PL configured
                 detected_ctcss: float | None = None   # last detected tone for display
+                # For a known PL tone accumulate ~6 complete cycles before analysing;
+                # much shorter than the 4096-sample default, allowing detection to
+                # complete during the carrier debounce window (parallel, not sequential).
+                ctcss_window: int = (max(512, int(self.audio_rate / pl_tone * 6))
+                                     if pl_tone > 0.0 else _CTCSS_WINDOW)
                 self._resume_event.clear()  # reset any pending resume from previous dwell
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
                 fir_zi_q = np.zeros(len(fir_coeffs) - 1)
@@ -2024,15 +2029,15 @@ class RTLFMScanner:
                     signal_present = rms > (close_thr if squelch_open else threshold)
                     if signal_present or squelch_open:
                         ctcss_buf.extend(audio.tolist())
-                        if len(ctcss_buf) >= _CTCSS_WINDOW:
+                        if len(ctcss_buf) >= ctcss_window:
                             ctcss_detected, detected_ctcss = _ctcss_analyze(
-                                np.array(ctcss_buf[:_CTCSS_WINDOW], dtype=np.float32),
+                                np.array(ctcss_buf[:ctcss_window], dtype=np.float32),
                                 self.audio_rate, pl_tone,
                             )
                             if self.debug:
                                 print(f"[ctcss] {freq_str}: detected={detected_ctcss}  "
                                       f"pl={pl_tone}  gated={'open' if ctcss_detected else 'closed'}")
-                            ctcss_buf = ctcss_buf[_CTCSS_WINDOW:]
+                            ctcss_buf = ctcss_buf[ctcss_window:]
                     elif pl_tone > 0.0:
                         # Carrier gone — reset so the next transmission is evaluated fresh.
                         ctcss_buf.clear()
@@ -2052,17 +2057,25 @@ class RTLFMScanner:
                                 "db": round(db, 1), "active": active,
                                 "ctcss": detected_ctcss})
 
-                    if active:
+                    # On PL channels, count the open debounce from carrier presence
+                    # alone so that CTCSS detection and RF debounce run in parallel.
+                    # Once both are satisfied the squelch opens immediately.
+                    # On non-PL channels ctcss_detected is always True, so
+                    # carrier_ok == active and behaviour is unchanged.
+                    carrier_ok = signal_present if pl_tone > 0.0 else active
+
+                    if carrier_ok:
                         if squelch_open:
-                            # Already open: extend hold/dwell timers normally.
-                            last_sig_t  = time.time()
-                            dwell_start = time.time()
+                            if active:
+                                # Both carrier and PL confirmed: refresh hold/dwell timers.
+                                last_sig_t  = time.time()
+                                dwell_start = time.time()
                             open_debounce = 0
                         else:
-                            # Debounce: require consecutive active chunks before opening.
+                            # Debounce: require consecutive carrier chunks before opening.
                             # Prevents brief noise spikes from triggering hold.
                             open_debounce += 1
-                            if open_debounce >= _OPEN_DEBOUNCE:
+                            if open_debounce >= _OPEN_DEBOUNCE and ctcss_detected:
                                 last_sig_t  = time.time()
                                 dwell_start = time.time()
                                 squelch_open    = True
