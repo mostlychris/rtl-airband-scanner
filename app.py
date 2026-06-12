@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.2"
+VERSION    = "2.7.3"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -524,20 +524,36 @@ let _gateRaf   = null;
 let _gateGain  = 1.0;
 let audMount   = null;
 
-// Returns how many milliseconds the audio lags behind real-time.
-// On the MSE path (Android browser) the lag comes from the SourceBuffer.
-// On the desktop path the <audio> element also buffers ahead; read its
-// buffered range the same way.  Returns 0 for the native-app path.
+// Desktop audio lag tracking via wall-clock vs. play-position.
+// _audEl.buffered is unreliable for infinite WAV streams — Chrome may report
+// a near-zero buffered range even when the play position is 2 s behind the
+// live edge.  Instead: record when the stream connection opened (_streamT0)
+// and measure lag = (wall_elapsed - _audEl.currentTime).  Sampled every
+// 200 ms into an EMA so _audioLagMs() returns a stable estimate even at the
+// exact moment a new WebSocket event fires.
+let _streamT0  = null;   // Date.now() when /stream src was set
+let _lagEstMs  = 0;      // EMA of desktop lag; starts at 0, corrects quickly
+
+function _tickDesktopLag() {
+  if (_mseActive || _isNativeApp || !_audEl || _audEl.paused || _streamT0 === null) return;
+  if (_audEl.currentTime < 0.3) return;   // not yet playing stably
+  const raw = Math.max(0, (Date.now() - _streamT0) - _audEl.currentTime * 1000);
+  if (raw > 10000) return;               // ignore implausible outliers (>10 s)
+  _lagEstMs = _lagEstMs === 0 ? raw : _lagEstMs * 0.8 + raw * 0.2;
+}
+setInterval(_tickDesktopLag, 200);
+
+// Returns how many milliseconds the audio lags behind real-time WebSocket events.
+// MSE path (Android): read directly from the SourceBuffer buffered range.
+// Desktop path: use the wall-clock/play-position EMA computed above.
+// Native app: no buffering, returns 0.
 function _audioLagMs() {
   if (_isNativeApp) return 0;
   if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
     return Math.max(0,
       (_mseSb.buffered.end(_mseSb.buffered.length - 1) - _audEl.currentTime) * 1000);
   }
-  if (!_mseActive && _audEl && _audEl.buffered && _audEl.buffered.length) {
-    return Math.max(0,
-      (_audEl.buffered.end(_audEl.buffered.length - 1) - _audEl.currentTime) * 1000);
-  }
+  if (!_mseActive) return _lagEstMs;
   return 0;
 }
 let _audEl     = null;
@@ -674,6 +690,8 @@ function _initAudEl() {
   } else {
     // Desktop: simple WAV stream with Web Audio graph for HP/LP filtering,
     // volume, and squelch gate.
+    _streamT0 = Date.now();
+    _lagEstMs = 0;
     _audEl.src = '/stream';
     _initWebAudioGraph();
   }
@@ -818,6 +836,8 @@ function _reloadStream() {
   if (_mseActive) {
     _mseConnect();
   } else {
+    _streamT0 = Date.now();
+    _lagEstMs = 0;
     _audEl.load();
     _audEl.play().catch(() => updateAudioUI());
   }
