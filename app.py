@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.0"
+VERSION    = "2.7.1"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -2133,10 +2133,15 @@ class RTLFMScanner:
 
                     if carrier_ok:
                         if squelch_open:
-                            # Carrier present: always refresh hold timer so brief CTCSS
-                            # detection gaps (voice energy at PL freq, inter-window gap)
-                            # don't drain the timer and prematurely close squelch.
-                            last_sig_t = time.time()
+                            # Hold-timer refresh rules:
+                            # • PL channels: carrier alone (signal_present) refreshes the
+                            #   timer so CTCSS detection gaps don't drain it prematurely.
+                            # • Non-PL channels: require rms > full threshold (not just the
+                            #   hysteresis close_thr) so that noise bursts that briefly
+                            #   exceed close_thr can't hold the squelch open indefinitely
+                            #   after a weak spike originally opened it.
+                            if pl_tone > 0.0 or rms > threshold:
+                                last_sig_t = time.time()
                             if active:
                                 # Both carrier and PL confirmed: also refresh dwell timer.
                                 dwell_start = time.time()
