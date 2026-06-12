@@ -2097,9 +2097,12 @@ class RTLFMScanner:
 
                     if carrier_ok:
                         if squelch_open:
+                            # Carrier present: always refresh hold timer so brief CTCSS
+                            # detection gaps (voice energy at PL freq, inter-window gap)
+                            # don't drain the timer and prematurely close squelch.
+                            last_sig_t = time.time()
                             if active:
-                                # Both carrier and PL confirmed: refresh hold/dwell timers.
-                                last_sig_t  = time.time()
+                                # Both carrier and PL confirmed: also refresh dwell timer.
                                 dwell_start = time.time()
                             open_debounce = 0
                         else:
