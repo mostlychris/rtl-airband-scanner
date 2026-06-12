@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.1"
+VERSION    = "2.7.2"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -980,15 +980,6 @@ function onMsg(m) {
     const _fclLag = _audioLagMs();
     if (_fclLag > 100) setTimeout(() => updateCard(m.mount, true), _fclLag);
     else updateCard(m.mount, true);
-    // Browser path: close gate at the moment buffered audio reaches the signal-
-    // drop point.  freq_clear fires squelch_hold seconds AFTER signal dropped, so
-    // subtract squelch_hold from the audio lag: if lagMs >= squelchHoldMs the gate
-    // fires before freq_clear would (perfect); if lagMs < squelchHoldMs the delay
-    // clamps to 0 and a small amount of noise passes — better than cutting speech.
-    if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) {
-      const sqHoldMs = (S.streams[m.mount] && S.streams[m.mount].squelchHoldMs) || 2000;
-      setTimeout(() => _setGate(false), Math.max(0, _fclLag - sqHoldMs));
-    }
   } else if (m.type === 'signal') {
     // All signal-bar and CTCSS updates are delayed by the MSE audio lag so the
     // display changes at the same moment the listener actually hears the signal.
@@ -1028,14 +1019,23 @@ function onMsg(m) {
       }
     };
     if (_sigLag > 100) setTimeout(_doSignalUI, _sigLag); else _doSignalUI();
-    // Native-app squelch tail suppression: AudioTrack has no LP/HP filtering so
-    // FM discriminator noise is clearly audible as static.  Gate fires immediately
-    // here because the native app has no audio buffer lag (plays in real-time).
-    // Browser path: gate is driven by freq_change (open) / freq_clear (close)
-    // which are already delayed to match the buffered audio timeline.
-    if (_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
-      _sqActive = m.active;
-      _setGate(m.active);
+    // Squelch tail suppression gate close — all paths.
+    // Fire when signal goes inactive, delayed by the audio buffer depth so the
+    // gate closes exactly when the listener hears the carrier drop.
+    // On desktop lagMs ≈ 0 so the gate fires immediately at signal-drop time
+    // (no tail).  On MSE/Android lagMs ≈ 2 s so it fires 2 s later (synced).
+    // Native app also fires immediately (no buffer lag).
+    // Gate open is handled by the freq_change callback for browser paths and
+    // by the active→inactive→active transition below for the native app.
+    if (A.sqtail && m.mount === (audMount || 'sdr') && !m.active && _sqActive) {
+      _sqActive = false;
+      const lagMs = _audioLagMs();
+      if (lagMs > 0) setTimeout(() => _setGate(false), lagMs);
+      else _setGate(false);
+    }
+    if (_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr') && m.active && !_sqActive) {
+      _sqActive = true;
+      _setGate(true);
     }
   } else if (m.type === 'channels_update') {
     const s = S.streams[m.mount]; if (!s) return;
