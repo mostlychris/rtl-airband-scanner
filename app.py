@@ -252,6 +252,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 }
 .sqfill.active{box-shadow:0 0 4px rgba(57,255,20,.6)}
 .sq-label{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-left:8px;flex-shrink:0}
+.sq-level{font-size:9px;font-family:monospace;color:var(--muted);margin-left:10px;flex-shrink:0;min-width:11ch;text-align:right}
 
 /* ── Action buttons (SKIP / EDIT / DEL) ─────────────────── */
 .sc-acts{
@@ -999,6 +1000,16 @@ function onMsg(m) {
         d.style.width = pct + '%';
         d.className = 'sqfill' + (m.active ? ' active' : '');
       }
+      const lv = document.getElementById('sqlevel_' + eid(m.mount));
+      if (lv) {
+        const s2 = S.streams[m.mount];
+        const thr = s2 ? (s2.activeFreq && s2.channelSquelch && s2.channelSquelch[s2.activeFreq]
+          ? s2.channelSquelch[s2.activeFreq] : (s2.defaultSquelch || 0.05)) : 0.05;
+        const thrDb = 20 * Math.log10(Math.max(thr, 1e-9));
+        lv.textContent = m.active || m.db > -90
+          ? (m.db.toFixed(1) + ' / ' + thrDb.toFixed(1) + ' dB') : '';
+        lv.style.color = m.active ? 'var(--green)' : 'var(--muted)';
+      }
       // Update detected CTCSS tone display in-place (avoids full card re-render)
       const s = S.streams[m.mount];
       if (s && m.ctcss !== undefined) {
@@ -1213,7 +1224,7 @@ function cardHtml(s) {
     + '<div class="sc-lbl">' + escHtml(primary) + '</div>'
     + metaHtml
     + '</div>'
-    + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span></div>'
+    + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span><span class="sq-level" id="sqlevel_' + eid(s.mount) + '"></span></div>'
     + actsHtml
     + '<div class="chlist">' + chBankHtml + '</div>';
 }
