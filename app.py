@@ -523,13 +523,19 @@ let _gateRaf   = null;
 let _gateGain  = 1.0;
 let audMount   = null;
 
-// Returns how many milliseconds the MSE audio lags behind real-time.
-// Used to delay UI events so the display matches what is actually heard.
-// Returns 0 on the native-app and desktop AudioWorklet paths (no MSE buffer).
+// Returns how many milliseconds the audio lags behind real-time.
+// On the MSE path (Android browser) the lag comes from the SourceBuffer.
+// On the desktop path the <audio> element also buffers ahead; read its
+// buffered range the same way.  Returns 0 for the native-app path.
 function _audioLagMs() {
+  if (_isNativeApp) return 0;
   if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
     return Math.max(0,
       (_mseSb.buffered.end(_mseSb.buffered.length - 1) - _audEl.currentTime) * 1000);
+  }
+  if (!_mseActive && _audEl && _audEl.buffered && _audEl.buffered.length) {
+    return Math.max(0,
+      (_audEl.buffered.end(_audEl.buffered.length - 1) - _audEl.currentTime) * 1000);
   }
   return 0;
 }
