@@ -937,6 +937,7 @@ function onMsg(m) {
       s.channelPL      = s.channelPL      || {};
       s.skipped        = s.skipped        || [];
       s.holdFreq       = s.holdFreq       || null;
+      s.squelchHoldMs  = (s.squelchHold || 2.0) * 1000;
       S.streams[s.mount] = s;
       (s.history || []).forEach(h => pushActivity(s.name, h.freq, h.label, h.time));
     });
@@ -963,7 +964,11 @@ function onMsg(m) {
     s.detectedCTCSS = null;   // clear on each new frequency
     // Delay the visual update to match when the buffered audio is actually heard.
     const _fcLag = _audioLagMs();
-    const _doFreqChange = () => { updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time); };
+    const _doFreqChange = () => {
+      updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time);
+      // Browser path: open gate when buffered audio catches up to squelch-open moment.
+      if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) _setGate(true);
+    };
     if (_fcLag > 100) setTimeout(_doFreqChange, _fcLag); else _doFreqChange();
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
   } else if (m.type === 'freq_clear') {
@@ -974,6 +979,15 @@ function onMsg(m) {
     const _fclLag = _audioLagMs();
     if (_fclLag > 100) setTimeout(() => updateCard(m.mount, true), _fclLag);
     else updateCard(m.mount, true);
+    // Browser path: close gate at the moment buffered audio reaches the signal-
+    // drop point.  freq_clear fires squelch_hold seconds AFTER signal dropped, so
+    // subtract squelch_hold from the audio lag: if lagMs >= squelchHoldMs the gate
+    // fires before freq_clear would (perfect); if lagMs < squelchHoldMs the delay
+    // clamps to 0 and a small amount of noise passes — better than cutting speech.
+    if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) {
+      const sqHoldMs = (S.streams[m.mount] && S.streams[m.mount].squelchHoldMs) || 2000;
+      setTimeout(() => _setGate(false), Math.max(0, _fclLag - sqHoldMs));
+    }
   } else if (m.type === 'signal') {
     // All signal-bar and CTCSS updates are delayed by the MSE audio lag so the
     // display changes at the same moment the listener actually hears the signal.
@@ -1003,24 +1017,14 @@ function onMsg(m) {
       }
     };
     if (_sigLag > 100) setTimeout(_doSignalUI, _sigLag); else _doSignalUI();
-    // Squelch tail suppression: gate audio closed on signal drop, open on signal open.
-    // Only applied to the currently playing mount so background activity is ignored.
-    // On the MSE path the audio is buffered ~2 s behind real-time, so we delay
-    // the gate by the current buffer depth so it fires at the right point in the
-    // audio timeline rather than 2 s early (which would cut voice, then let the
-    // noisy tail play unmuted once the buffer catches up).
-    // Gate fires when: (a) user enabled squelch tail suppression, OR
-    // (b) native app — AudioTrack has no LP/HP client-side filtering so FM
-    // discriminator noise during the hold period is clearly audible as static.
-    // The browser's LP BiquadFilter attenuates this noise enough to be
-    // inaudible even without the gate; AudioTrack gets raw PCM.
-    const _needGate = A.sqtail;
-    if (_needGate && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
+    // Native-app squelch tail suppression: AudioTrack has no LP/HP filtering so
+    // FM discriminator noise is clearly audible as static.  Gate fires immediately
+    // here because the native app has no audio buffer lag (plays in real-time).
+    // Browser path: gate is driven by freq_change (open) / freq_clear (close)
+    // which are already delayed to match the buffered audio timeline.
+    if (_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr') && m.active !== _sqActive) {
       _sqActive = m.active;
-      const active = m.active;
-      const lagMs = _audioLagMs();
-      if (lagMs > 0) setTimeout(() => _setGate(active), lagMs);
-      else _setGate(active);
+      _setGate(m.active);
     }
   } else if (m.type === 'channels_update') {
     const s = S.streams[m.mount]; if (!s) return;
@@ -2083,12 +2087,12 @@ class RTLFMScanner:
                     active = signal_present and ctcss_detected
                     if self.debug:
                         dbg_state = (freq_str, squelch_open, active)
-                        if dbg_state != _last_dbg_state:
-                            print(f"[squelch] {freq_str}: sig={signal_level:.3f} "
+                        if squelch_open or dbg_state != _last_dbg_state:
+                            print(f"[squelch] {freq_str}: sig={rms:.3f} "
                                   f"({db:.1f} dB)  thr={threshold}"
                                   f"  {'OPEN' if squelch_open else 'closed'}"
                                   f"  {'ACTIVE' if active else 'inactive'}")
-                            _last_dbg_state = dbg_state
+                        _last_dbg_state = dbg_state
 
                     self._emit({"type": "signal", "mount": "sdr",
                                 "db": round(db, 1), "active": active,
@@ -2347,6 +2351,7 @@ def _state() -> dict:
             "channelPL":      channel_pl,
             "defaultSquelch": s.squelch_rms,
             "defaultGain":    s.gain,
+            "squelchHold":    s.squelch_hold,
             "holdFreq":       hold_freq,
             "skipped":        skipped,
             "lastError":      s.last_error,
