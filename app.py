@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.3"
+VERSION    = "2.7.4"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -539,7 +539,8 @@ function _tickDesktopLag() {
   if (_audEl.currentTime < 0.3) return;   // not yet playing stably
   const raw = Math.max(0, (Date.now() - _streamT0) - _audEl.currentTime * 1000);
   if (raw > 10000) return;               // ignore implausible outliers (>10 s)
-  _lagEstMs = _lagEstMs === 0 ? raw : _lagEstMs * 0.8 + raw * 0.2;
+  // Jump straight to the first valid measurement; EMA from there.
+  _lagEstMs = _lagEstMs < 50 ? raw : _lagEstMs * 0.8 + raw * 0.2;
 }
 setInterval(_tickDesktopLag, 200);
 
@@ -983,8 +984,12 @@ function onMsg(m) {
     s.activeSince   = m.time;
     s.lastError     = null;
     s.detectedCTCSS = null;   // clear on each new frequency
-    // Delay the visual update to match when the buffered audio is actually heard.
+    // Snapshot lag now so all UI events for this transmission use the same
+    // delay — prevents the card updating with lag=0 (cold start) while
+    // signal-bar events later use a fully-converged lag, creating an apparent
+    // 2-3 s gap between the name appearing and the bar filling.
     const _fcLag = _audioLagMs();
+    s.txLagMs = _fcLag;
     const _doFreqChange = () => {
       updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time);
       // Browser path: open gate when buffered audio catches up to squelch-open moment.
@@ -997,26 +1002,30 @@ function onMsg(m) {
     s.activeFreq    = null;
     s.activeSince   = null;
     s.detectedCTCSS = null;
+    s.txLagMs       = undefined;
     const _fclLag = _audioLagMs();
     if (_fclLag > 100) setTimeout(() => updateCard(m.mount, true), _fclLag);
     else updateCard(m.mount, true);
   } else if (m.type === 'signal') {
-    // All signal-bar and CTCSS updates are delayed by the MSE audio lag so the
-    // display changes at the same moment the listener actually hears the signal.
-    const _sigLag = _audioLagMs();
+    // Use the lag snapshot taken at freq_change time so the signal bar and card
+    // update together.  Falls back to live _audioLagMs() between transmissions.
+    const s2 = S.streams[m.mount];
+    const _sigLag = (s2 && s2.txLagMs != null) ? s2.txLagMs : _audioLagMs();
     const _doSignalUI = () => {
+      const st = S.streams[m.mount];
+      const thr = st ? (st.activeFreq && st.channelSquelch && st.channelSquelch[st.activeFreq]
+        ? st.channelSquelch[st.activeFreq] : (st.defaultSquelch || 0.05)) : 0.05;
+      const thrDb = 20 * Math.log10(Math.max(thr, 1e-9));
       const d = document.getElementById('sqfill_' + eid(m.mount));
       if (d) {
-        const pct = m.active ? Math.min(100, Math.max(0, (m.db + 60) * 100 / 40)) : 0;
+        // Scale: 0 % at squelch threshold, 100 % at perfect carrier (0 dB).
+        const pct = m.active ? Math.min(100, Math.max(0,
+          (m.db - thrDb) * 100 / (-thrDb))) : 0;
         d.style.width = pct + '%';
         d.className = 'sqfill' + (m.active ? ' active' : '');
       }
       const lv = document.getElementById('sqlevel_' + eid(m.mount));
       if (lv) {
-        const s2 = S.streams[m.mount];
-        const thr = s2 ? (s2.activeFreq && s2.channelSquelch && s2.channelSquelch[s2.activeFreq]
-          ? s2.channelSquelch[s2.activeFreq] : (s2.defaultSquelch || 0.05)) : 0.05;
-        const thrDb = 20 * Math.log10(Math.max(thr, 1e-9));
         lv.textContent = m.active || m.db > -90
           ? (m.db.toFixed(1) + ' / ' + thrDb.toFixed(1) + ' dB') : '';
         lv.style.color = m.active ? 'var(--green)' : 'var(--muted)';
