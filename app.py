@@ -2024,9 +2024,24 @@ class RTLFMScanner:
 
                 while self._running:
                     # Exit inner loop immediately if this freq was skipped mid-dwell.
+                    # Also re-read per-channel overrides each chunk so edits to squelch,
+                    # gain, or PL take effect immediately without waiting for a retune.
                     with self._lock:
                         if freq_str in self.skipped:
                             break
+                        threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
+                        new_gain  = self.channel_gain.get(freq_str, self.gain)
+                        new_pl    = self.channel_pl.get(freq_str, 0.0)
+                    if new_gain != eff_gain:
+                        eff_gain = new_gain
+                        sdr.set_gain(eff_gain)
+                    if new_pl != pl_tone:
+                        pl_tone        = new_pl
+                        ctcss_buf      = []
+                        ctcss_detected = (pl_tone == 0.0)
+                        detected_ctcss = None
+                        ctcss_window   = (max(512, int(self.audio_rate / pl_tone * 6))
+                                          if pl_tone > 0.0 else _CTCSS_WINDOW)
                     try:
                         raw = iq_q.get(timeout=5.0)
                     except _q.Empty:
