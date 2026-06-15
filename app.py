@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.5"
+VERSION    = "2.9.6"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -2123,6 +2123,7 @@ class RTLFMScanner:
                 fir_zi_i = np.zeros(len(fir_coeffs) - 1)  # FIR state reset on each freq hop
                 fir_zi_q = np.zeros(len(fir_coeffs) - 1)
                 sq_just_opened = False
+                sq_just_closed = False
                 open_debounce  = 0
 
                 while self._running:
@@ -2258,6 +2259,7 @@ class RTLFMScanner:
                                 dwell_start = time.time()
                                 squelch_open    = True
                                 sq_just_opened  = True
+                                sq_just_closed  = False
                                 with self._lock:
                                     now   = datetime.now()
                                     self._active_freq  = freq_str
@@ -2274,8 +2276,7 @@ class RTLFMScanner:
                     else:
                         open_debounce = 0
 
-                    # Pre-compute close condition before emitting audio so the
-                    # final chunk can be faded out rather than cut off abruptly.
+                    # Pre-compute close condition (scan advance, not audio gate).
                     should_close_sq = False
                     holding = False
                     if not active:
@@ -2284,20 +2285,30 @@ class RTLFMScanner:
                         if squelch_open and time.time() - last_sig_t > self.squelch_hold:
                             should_close_sq = True
 
-                    if squelch_open:
+                    # Audio gate: emit only while signal is active.
+                    # On the first inactive chunk apply a short fade-out to avoid
+                    # a click, then go silent for the rest of the hold period.
+                    # sq_just_closed is True for exactly one chunk (the transition).
+                    if squelch_open and active:
                         out = audio
                         if sq_just_opened:
                             out = audio.copy()
                             n = min(_SQUELCH_FADE, len(out))
                             out[:n] *= np.linspace(0.0, 1.0, n, dtype=np.float32)
                             sq_just_opened = False
-                        if should_close_sq:
-                            if out is audio:
-                                out = audio.copy()
-                            n = min(_SQUELCH_FADE, len(out))
-                            out[-n:] *= np.linspace(1.0, 0.0, n, dtype=np.float32)
+                        sq_just_closed = True
                         pcm = (out * 32767).astype(np.int16).tobytes()
                         self._emit_audio(pcm)
+                    elif squelch_open and sq_just_closed:
+                        # One fade-out chunk at the active→inactive transition.
+                        out = audio.copy()
+                        n = min(_SQUELCH_FADE, len(out))
+                        out[:n] *= np.linspace(1.0, 0.0, n, dtype=np.float32)
+                        out[n:] = 0.0
+                        sq_just_closed = False
+                        pcm = (out * 32767).astype(np.int16).tobytes()
+                        self._emit_audio(pcm)
+                    # else: squelch_open but inactive — emit nothing (silence)
 
                     # Resume button: advance immediately, closing squelch cleanly first.
                     if self._resume_event.is_set() and n_freqs > 1:
