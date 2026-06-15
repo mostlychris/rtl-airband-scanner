@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.4"
+VERSION    = "2.9.5"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -183,12 +183,11 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 /* ── Scanner card ─────────────────────────────────────────── */
 .scard{
   background:var(--card);border:1px solid var(--border);border-radius:4px;
-  overflow:hidden;cursor:pointer;transition:border-color .2s,box-shadow .2s;
+  overflow:hidden;transition:border-color .2s,box-shadow .2s;
   box-shadow:0 4px 16px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.02)
 }
-.scard:hover{border-color:#2a3448}
+
 .scard.playing{border-color:rgba(45,255,110,.45);box-shadow:0 0 18px rgba(45,255,110,.1),0 4px 16px rgba(0,0,0,.6)}
-.scard.locked{border-color:rgba(77,138,255,.45);box-shadow:0 0 18px rgba(77,138,255,.12),0 4px 16px rgba(0,0,0,.6)}
 
 /* ── Panel header (stream name + status) ─────────────────── */
 .sc-panel-hdr{
@@ -467,7 +466,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 </div>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
-const S = { streams:{}, playing:null, audioOn:(localStorage.getItem('a_on')==='true'), locked:null };
+const S = { streams:{}, playing:null, audioOn:(localStorage.getItem('a_on')==='true') };
 let ws, wsRetry=0;
 let actItems = [];
 let _editFreq    = null;   // freq string currently open in edit mode, or null
@@ -990,7 +989,7 @@ function onMsg(m) {
     // For the native app S.audioOn is always true, so this also handles the
     // initial auto-start without any user interaction required.
     if (S.audioOn && !audMount) {
-      const target = S.locked || S.playing || (Object.values(S.streams).find(s=>s.connected)||{}).mount;
+      const target = S.playing || (Object.values(S.streams).find(s=>s.connected)||{}).mount;
       if (target) {
         // Resume AudioContext before play() — required when AudioContext was
         // created before a user gesture (native app autoplay path).
@@ -1048,7 +1047,7 @@ function onMsg(m) {
       }
     };
     if (_fcLag > 100) setTimeout(_doFreqChange, _fcLag); else _doFreqChange();
-    if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
+    if (S.audioOn) switchAudio(m.mount);
   } else if (m.type === 'freq_clear') {
     const s = S.streams[m.mount]; if (!s) return;
     s.pendingFreq   = null;
@@ -1174,7 +1173,6 @@ function renderAll() {
     const d = document.createElement('div');
     d.className = cardClass(s);
     d.id = 'sc' + eid(s.mount);
-    d.onclick = e => { if (!e.target.closest('.chlist')) lockTo(s.mount); };
     d.innerHTML = cardHtml(s);
     g.appendChild(d);
   });
@@ -1189,8 +1187,7 @@ function updateCard(mount, skipIfEditing) {
 }
 function cardClass(s) {
   let c = 'scard';
-  if (S.locked === s.mount) c += ' locked';
-  else if (audMount === s.mount && S.audioOn) c += ' playing';
+  if (audMount === s.mount && S.audioOn) c += ' playing';
   return c;
 }
 function cardHtml(s) {
@@ -1214,8 +1211,7 @@ function cardHtml(s) {
   // Panel header: stream name + status LED
   const rxBadge = (audMount===s.mount && S.audioOn)
     ? ' <span class="blink" style="color:var(--green);font-size:9px;letter-spacing:.1em">▶ RX</span>' : '';
-  const lockBadge = S.locked===s.mount
-    ? ' <span style="font-size:9px;color:var(--blue);letter-spacing:.1em">⬡ LOCK</span>' : '';
+  const lockBadge = '';
   const holdBadge = isHeld
     ? ' <span style="font-size:9px;color:var(--amber);letter-spacing:.1em">⏸ HOLD</span>' : '';
   const connStatus = s.connected
@@ -1361,12 +1357,7 @@ function switchAudio(mount) {
   updateAudioUI();
   Object.keys(S.streams).forEach(m => updateCard(m));
 }
-function lockTo(mount) {
-  if (S.locked === mount) { S.locked = null; }
-  else { S.locked = mount; if (S.audioOn) switchAudio(mount); }
-  updateAudioUI();
-  Object.keys(S.streams).forEach(m => updateCard(m));
-}
+
 function toggleAudio() {
   if (S.audioOn) {
     S.audioOn = false; localStorage.setItem('a_on','false'); closeAudio(); updateAudioUI(); Object.keys(S.streams).forEach(m=>updateCard(m));
@@ -1379,7 +1370,7 @@ function _startAudio() {
   _gateGain = 1.0;
   if (_isNativeApp) {
     audMount = audMount
-      || S.locked || S.playing
+      || S.playing
       || (Object.values(S.streams).find(s => s.connected) || {}).mount;
     if (audMount) openAudioStream(audMount);
     _applyVolume();
@@ -1391,7 +1382,7 @@ function _startAudio() {
   }
   if (!_isNativeApp) {
     audMount = audMount
-      || S.locked || S.playing
+      || S.playing
       || (Object.values(S.streams).find(s => s.connected) || {}).mount
       || 'sdr';
   }
@@ -1409,7 +1400,7 @@ function updateAudioUI() {
     const s = audMount ? S.streams[audMount] : null;
     btn.className = 'abtn on';
     document.getElementById('aico').textContent = (audMount && connected) ? '▶' : '…';
-    document.getElementById('albl').textContent  = S.locked ? 'Audio Pinned' : 'Audio Follow';
+    document.getElementById('albl').textContent  = 'Audio Follow';
     src.textContent = s ? s.name.toUpperCase() : '';
   } else {
     btn.className = 'abtn';
