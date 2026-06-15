@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.2"
+VERSION    = "2.9.3"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -1074,7 +1074,11 @@ function onMsg(m) {
     s.activeSince   = null;
     s.detectedCTCSS = null;
     s.txLagMs       = undefined;
-    const _fclLag = _audioLagMs();
+    // freq_clear arrives squelch_hold seconds after signal dropped.  Audio has
+    // already been silent for squelch_hold ms (server held it open that long).
+    // The correct display delay is max(0, lag - squelch_hold) so the card clears
+    // when the silence actually reaches the speaker, not squelch_hold seconds later.
+    const _fclLag = Math.max(0, _audioLagMs() - (s.squelchHoldMs || 2000));
     if (_fclLag > 100) setTimeout(() => updateCard(m.mount, true), _fclLag);
     else updateCard(m.mount, true);
   } else if (m.type === 'signal') {
