@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.8.1"
+VERSION    = "2.9.0"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -419,6 +419,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   <span id="wslog" style="font-size:.65em;color:#f84;margin-left:6px" title="Last disconnect — persists until next disconnect"></span>
   <div class="spacer"></div>
   <span class="asrc" id="asrc"></span>
+  <span id="audio-lag-display" style="font-size:.65em;color:var(--muted);margin-right:6px;display:none" title="Measured audio buffer depth"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
     <span id="aico">◼</span><span id="albl">Audio Off</span>
   </button>
@@ -465,7 +466,10 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
       Screen On (keep-alive)
     </label>
   </div>
-  <div id="audio-dbg-line" style="font-size:9px;color:var(--muted);font-family:monospace;margin-top:4px;word-break:break-all"></div>
+  <div class="actl" style="flex-direction:column;align-items:flex-start;gap:2px">
+    <span style="font-size:10px;color:var(--muted);cursor:pointer;user-select:none" onclick="toggleAudioDbg()">▶ Debug info</span>
+    <div id="audio-dbg-line" style="display:none;font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all"></div>
+  </div>
 </div>
 </div>
 <div class="overlay hidden" id="overlay">
@@ -727,6 +731,11 @@ async function _mseConnect() {
   // Abort any previous connection (filter change, watchdog reconnect, etc.)
   if (_mseAbort) { _mseAbort.abort(); }
   _mseAbort = new AbortController();
+  // Capture the controller for *this* invocation.  If _mseConnect is called
+  // again before this one exits (filter change, watchdog), the global
+  // _mseAbort is replaced but our local reference stays valid, so the
+  // reconnect-or-not check at the end tests the right signal.
+  const abort = _mseAbort;
   const ms     = new MediaSource();
   const objUrl = URL.createObjectURL(ms);
   _audEl.src   = objUrl;
@@ -802,7 +811,7 @@ async function _mseConnect() {
 
   // Wire abort signal → WebSocket close
   const _onAbort = () => audioWs.close(1000, 'reconnect');
-  _mseAbort.signal.addEventListener('abort', _onAbort, { once: true });
+  abort.signal.addEventListener('abort', _onAbort, { once: true });
 
   await new Promise((resolve, reject) => {
     audioWs.onopen    = resolve;
@@ -846,14 +855,15 @@ async function _mseConnect() {
 
   await new Promise(resolve => { audioWs.onclose = resolve; });
 
-  _mseAbort.signal.removeEventListener('abort', _onAbort);
+  abort.signal.removeEventListener('abort', _onAbort);
   clearInterval(_watchdog);
   _audEl.removeEventListener('canplay', _jumpToLive);
   if (_mseSb === sb) _mseSb = null;
 
-  // Reconnect unless this close was triggered by our own abort (filter change
-  // or explicit close).  Exponential backoff up to 30 s.
-  if (!_mseAbort.signal.aborted && S.audioOn)
+  // Reconnect unless this close was triggered by *our* abort (filter change
+  // or explicit close).  Use the locally captured controller so a newer
+  // _mseConnect invocation's abort doesn't suppress our reconnect.
+  if (!abort.signal.aborted && S.audioOn)
     setTimeout(_mseConnect, Math.min(1000 * (++_retries), 30000));
 }
 
@@ -1007,15 +1017,28 @@ function onMsg(m) {
       updateAudioUI();
     }
   } else if (m.type === 'audio_stats') {
-    // Update server-side sequence counter used for lag computation.
     if (m.audio_seq !== undefined) _serverAudioSeq = m.audio_seq;
+    // Desktop lag: use per-stream out_samples (includes injected silence)
+    // so lag stays accurate during squelch-closed idle periods.
+    if (!_mseActive && !_isNativeApp && m.out_samples !== undefined && _audEl && _audEl.currentTime > 0.3) {
+      const playedSamples = _streamSampleOff + _audEl.currentTime * _AUDIO_RATE;
+      const raw = Math.max(0, (m.out_samples - playedSamples) / _AUDIO_RATE * 1000);
+      if (raw < 30000) _lagEstMs = raw;
+    }
+    // Header lag badge
+    const lagDisplay = document.getElementById('audio-lag-display');
+    if (lagDisplay && S.audioOn && !_isNativeApp) {
+      const ms = Math.round(_lagEstMs);
+      lagDisplay.style.display = ms > 50 ? '' : 'none';
+      lagDisplay.textContent = ms + ' ms delay';
+    }
     const dbgEl = document.getElementById('audio-dbg-line');
-    if (dbgEl) {
+    if (dbgEl && dbgEl.style.display !== 'none') {
       const lagMs   = _lagEstMs.toFixed(0);
       const gateVal = _gateNode ? _gateNode.gain.value.toFixed(2) : String(_gateGain);
       const elState = _audEl ? (_audEl.paused ? 'paused' : 'playing') + '/rs' + _audEl.readyState : 'none';
       const ctx     = _audioCtx ? _audioCtx.state : 'none';
-      dbgEl.textContent = `seq:${m.audio_seq} q:${m.queue_depth} lag:${lagMs}ms ctx:${ctx} gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
+      dbgEl.textContent = `seq:${m.audio_seq} out:${m.out_samples} q:${m.queue_depth} lag:${lagMs}ms ctx:${ctx} gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
     }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
@@ -1062,8 +1085,13 @@ function onMsg(m) {
     // update together.  Falls back to live _audioLagMs() between transmissions.
     const s2 = S.streams[m.mount];
     const _sigLag = (s2 && s2.txLagMs != null) ? s2.txLagMs : _audioLagMs();
+    // Snapshot the active frequency now so the delayed callback can skip
+    // updates that belong to a previous transmission (freq has since changed).
+    const _sigFreq = s2 ? s2.activeFreq : null;
     const _doSignalUI = () => {
       const st = S.streams[m.mount];
+      // Drop stale update: a newer freq_change has started a different TX.
+      if (st && st.activeFreq !== _sigFreq) return;
       const thr = st ? (st.activeFreq && st.channelSquelch && st.channelSquelch[st.activeFreq]
         ? st.channelSquelch[st.activeFreq] : (st.defaultSquelch || 0.05)) : 0.05;
       const thrDb = 20 * Math.log10(Math.max(thr, 1e-9));
@@ -1308,7 +1336,10 @@ function cardHtml(s) {
       + '</div>'
     : '';
 
-  const collapsed = _chCollapsed[s.mount] !== false;
+  // Default to open when the channel list is short enough to fit without scrolling.
+  // User can toggle; once toggled the explicit state is remembered in _chCollapsed.
+  const _defaultCollapsed = Object.keys(s.channels || {}).length > 8;
+  const collapsed = _chCollapsed[s.mount] !== undefined ? _chCollapsed[s.mount] : _defaultCollapsed;
   const chBankHtml = '<div class="sc-chl-hdr" onclick="event.stopPropagation();toggleChBank(' + escHtml(JSON.stringify(s.mount)) + ')">'
     + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
     + (collapsed ? '' : rows + addArea);
@@ -1400,7 +1431,7 @@ function updateAudioUI() {
     const s = audMount ? S.streams[audMount] : null;
     btn.className = 'abtn on';
     document.getElementById('aico').textContent = (audMount && connected) ? '▶' : '…';
-    document.getElementById('albl').textContent  = S.locked ? 'Audio Lock' : 'Audio Auto';
+    document.getElementById('albl').textContent  = S.locked ? 'Audio Pinned' : 'Audio Follow';
     src.textContent = s ? s.name.toUpperCase() : '';
   } else {
     btn.className = 'abtn';
@@ -1518,6 +1549,14 @@ function setSqTail(v) {
   A.sqtail = v;
   localStorage.setItem('a_sqtail', v);
   if (!v) { _gateGain = 1.0; _applyVolume(); }
+}
+function toggleAudioDbg() {
+  const d = document.getElementById('audio-dbg-line');
+  const t = d.previousElementSibling;
+  if (!d) return;
+  const show = d.style.display === 'none';
+  d.style.display = show ? 'block' : 'none';
+  if (t) t.textContent = (show ? '▼' : '▶') + ' Debug info';
 }
 function initControls() {
   const vol = Math.round(A.vol * 100);
@@ -2491,10 +2530,14 @@ async def _audio_stats_loop():
         seq   = scanner.audio_seq
         depth = _audio_stats_max_depth
         _audio_stats_max_depth = 0
+        # Sum per-stream output counters (includes injected silence chunks so
+        # the browser can compute true lag without discounting idle periods).
+        out_sum = sum(getattr(q, 'out_samples', 0) for q in _audio_clients)
         await wsman.broadcast({
             "type":        "audio_stats",
             "audio_seq":   seq,
-            "queue_depth": depth,           # chunks (× 50 ms = lag budget used)
+            "out_samples": out_sum,         # total samples delivered (incl. silence)
+            "queue_depth": depth,
             "clients":     len(_audio_clients),
         })
 
@@ -2909,6 +2952,13 @@ async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
             pcm, _zi_lp = lfilter(_b_lp, _a_lp, pcm, zi=_zi_lp)
         return np.clip(pcm, -32768, 32767).astype(np.int16).tobytes()
 
+    # Per-connection output sample counter.  Incremented for every PCM chunk
+    # sent — real audio AND injected silence.  Exposed as q.out_samples so
+    # the audio_stats loop can include it.  This lets the browser compute lag
+    # as (server_audio_seq - q.out_samples) / rate * 1000, which stays correct
+    # even while silence is being injected between transmissions.
+    q.out_samples = 0   # type: ignore[attr-defined]
+
     async def generate():
         yield _wav_header(rate)
         try:
@@ -2919,7 +2969,9 @@ async def audio_stream(request: Request, hp: int = 0, lp: int = 0):
                     data = await asyncio.wait_for(q.get(), timeout=0.5)
                 except asyncio.TimeoutError:
                     data = silence
-                yield _apply_filters(data)
+                filtered = _apply_filters(data)
+                q.out_samples += len(filtered) // 2
+                yield filtered
         finally:
             try: _audio_clients.remove(q)
             except ValueError: pass
@@ -3052,8 +3104,7 @@ async def ws_audio_endpoint(ws: WebSocket,
     rate    = scanner.audio_rate if scanner else AUDIO_RATE
     q: asyncio.Queue[bytes] = asyncio.Queue(maxsize=30)
     _audio_clients.append(q)
-    silence = _rng.integers(-1, 2, size=int(rate * 0.1),
-                            dtype=np.int16).tobytes()   # 100 ms dither
+    silence = bytes(int(rate * 0.1) * 2)   # 100 ms zero PCM
 
     # Build ffmpeg audio filter chain
     af_parts: list[str] = []
@@ -3113,12 +3164,15 @@ async def ws_audio_endpoint(ws: WebSocket,
 
     feed_task = asyncio.create_task(_feed())
 
+    last_chunk_t = [asyncio.get_event_loop().time()]   # mutable cell for _watchdog
+
     async def _stream():
         try:
             while not stop.is_set():
                 chunk = await proc.stdout.read(4096)
                 if not chunk:
                     break
+                last_chunk_t[0] = asyncio.get_event_loop().time()
                 try:
                     await ws.send_bytes(chunk)
                 except Exception:
@@ -3129,18 +3183,18 @@ async def ws_audio_endpoint(ws: WebSocket,
     stream_task = asyncio.create_task(_stream())
 
     async def _watchdog():
-        """Restart ffmpeg if its stdout goes silent for more than 5 seconds.
-        ffmpeg can hang without exiting if the pipe drains slowly; this catches
-        that case and forces a clean restart by signalling stop."""
-        nonlocal proc, feed_task, stream_task
+        """Stop if ffmpeg exits OR if its stdout stalls for > 5 s.
+        Checking last_chunk_t catches the hung-pipe case where ffmpeg is still
+        running but producing no output (e.g. encoder deadlock)."""
         STALL_SECS = 5.0
         while not stop.is_set():
             await asyncio.sleep(STALL_SECS)
             if stop.is_set():
                 break
-            rc = proc.returncode
-            if rc is not None:
-                # ffmpeg exited — trigger reconnect
+            if proc.returncode is not None:
+                stop.set()
+                break
+            if asyncio.get_event_loop().time() - last_chunk_t[0] > STALL_SECS:
                 stop.set()
                 break
 
