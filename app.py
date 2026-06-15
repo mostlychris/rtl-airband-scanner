@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.4"
+VERSION    = "2.7.5"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -993,7 +993,13 @@ function onMsg(m) {
     const _doFreqChange = () => {
       updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time);
       // Browser path: open gate when buffered audio catches up to squelch-open moment.
-      if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) _setGate(true);
+      // Also reset _sqActive so the signal handler will fire the gate close again
+      // on the next inactive transition (it stays false after a gate close and must
+      // be reset here or the gate never closes after the first transmission).
+      if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) {
+        _sqActive = true;
+        _setGate(true);
+      }
     };
     if (_fcLag > 100) setTimeout(_doFreqChange, _fcLag); else _doFreqChange();
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
