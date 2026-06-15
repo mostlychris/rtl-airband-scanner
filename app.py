@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.3"
+VERSION    = "2.9.4"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -333,13 +333,6 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .af{font-family:var(--mono);font-weight:600;width:82px;flex-shrink:0;color:var(--amber)}
 .al{color:var(--text);flex:1;font-size:11px;opacity:.8}
 
-/* ── Overlay ──────────────────────────────────────────────── */
-.overlay{position:fixed;inset:0;background:rgba(0,0,0,.88);display:flex;align-items:center;justify-content:center;z-index:200}
-.overlay.hidden{display:none}
-.obox{background:var(--card);border:1px solid #1e2a3e;border-radius:6px;padding:28px 36px;text-align:center;max-width:400px;box-shadow:0 0 40px rgba(45,255,110,.06)}
-.obox h2{font-size:14px;margin-bottom:8px;color:var(--green);letter-spacing:.15em;text-transform:uppercase;text-shadow:var(--glow-sm)}
-.obox p{color:var(--muted);font-size:12px;margin-bottom:22px;line-height:1.7}
-.obtn{background:rgba(45,255,110,.08);border:1px solid rgba(45,255,110,.3);border-radius:3px;color:var(--green);cursor:pointer;font-size:11px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:9px 24px;margin:4px;transition:all .15s}
 .obtn:hover{background:rgba(45,255,110,.16);box-shadow:0 0 12px rgba(45,255,110,.2)}
 .obtn.skip{background:#0a0e18;border:1px solid #1e2a3e;color:var(--muted);font-weight:400;letter-spacing:.06em}
 
@@ -471,16 +464,6 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
     <div id="audio-dbg-line" style="display:none;font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all"></div>
   </div>
 </div>
-</div>
-<div class="overlay hidden" id="overlay">
-  <div class="obox">
-    <h2>◼ Enable Audio</h2>
-    <p>Audio is demodulated on the device and streamed as PCM over WebSocket.<br>
-       Latency is typically under 1 second.<br>
-       Click a stream panel to lock audio to that stream.</p>
-    <button class="obtn" onclick="enableAudio()">▶ Enable Audio</button>
-    <button class="obtn skip" onclick="closeOverlay()">Display Only</button>
-  </div>
 </div>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -907,7 +890,6 @@ function openAudioStream(mount) {
     console.log('[audio] _audEl paused — calling play()');
     _audEl.play().catch((e) => {
       console.warn('[audio] play() failed:', e);
-      document.getElementById('overlay').classList.remove('hidden');
     });
   }
   _updateMediaSession(true);
@@ -1386,27 +1368,25 @@ function lockTo(mount) {
   Object.keys(S.streams).forEach(m => updateCard(m));
 }
 function toggleAudio() {
-  if (!S.audioOn) { document.getElementById('overlay').classList.remove('hidden'); }
-  else { S.audioOn=false; localStorage.setItem('a_on','false'); closeAudio(); updateAudioUI(); Object.keys(S.streams).forEach(m=>updateCard(m)); }
+  if (S.audioOn) {
+    S.audioOn = false; localStorage.setItem('a_on','false'); closeAudio(); updateAudioUI(); Object.keys(S.streams).forEach(m=>updateCard(m));
+  } else {
+    _startAudio();
+  }
 }
-function enableAudio() {
-  S.audioOn = true; localStorage.setItem('a_on','true'); closeOverlay();
+function _startAudio() {
+  S.audioOn = true; localStorage.setItem('a_on','true');
   _gateGain = 1.0;
   if (_isNativeApp) {
-    // Native: kick off MediaPlayer via openAudioStream once we know the mount
     audMount = audMount
       || S.locked || S.playing
       || (Object.values(S.streams).find(s => s.connected) || {}).mount;
     if (audMount) openAudioStream(audMount);
     _applyVolume();
   } else {
-    // Always start the stream element right here — this is a gesture context,
-    // so play() is guaranteed to succeed regardless of whether S.streams is
-    // populated yet.  openAudioStream (called when state arrives) will no-op
-    // since the element is already playing.
     _initAudEl();
     _applyVolume();
-    if (_audEl.error) _audEl.load();  // only reset on actual error, not just paused
+    if (_audEl.error) _audEl.load();
     _audEl.play().catch(() => {});
   }
   if (!_isNativeApp) {
@@ -1419,7 +1399,6 @@ function enableAudio() {
   updateAudioUI();
   Object.keys(S.streams).forEach(m => updateCard(m));
 }
-function closeOverlay() { document.getElementById('overlay').classList.add('hidden'); }
 function updateAudioUI() {
   document.getElementById('acontrols').classList.toggle('hidden', !S.audioOn);
   const btn = document.getElementById('abtn');
@@ -1615,30 +1594,22 @@ document.addEventListener('visibilitychange', () => {
   // Resume the audio element if it was paused while locked.
   // visibilitychange counts as user activation in Chrome, so play() works here.
   if (S.audioOn && _audEl && _audEl.paused) {
-    _audEl.play().catch(() => {
-      document.getElementById('overlay').classList.remove('hidden');
-    });
+    _audEl.play().catch(() => {});
   }
 });
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 
-// Native app: audio is always on — it's the entire purpose of the app.
-// Skip the "tap to enable audio" overlay entirely.
-if (_isNativeApp) {
-  S.audioOn = true;
-  localStorage.setItem('a_on', 'true');
-}
+// Audio is always on — start immediately without requiring a click.
+S.audioOn = true;
+localStorage.setItem('a_on', 'true');
 
-_initAudEl();   // pre-create the element so the /stream connection opens early
+_initAudEl();
 connect();
 initControls();
-// Desktop: AudioContext starts suspended if created before a user gesture.
-// Resume it on the first pointer interaction so audio flows without requiring
-// the user to manually adjust the volume slider.
+// Resume AudioContext on first pointer interaction (browser autoplay policy).
 document.addEventListener('pointerdown', function _resumeCtx() {
   if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume().catch(() => {});
 }, { once: true, passive: true });
-if (!S.audioOn) setTimeout(() => document.getElementById('overlay').classList.remove('hidden'), 900);
 updateAudioUI();
 </script>
 </body>
