@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.0"
+VERSION    = "2.9.1"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -530,28 +530,30 @@ let _gateGain        = 1.0;
 let _gateCloseTimer  = null;   // handle for pending delayed _setGate(false)
 let audMount         = null;
 
-// Audio lag tracking via sequence-number comparison.
+// Audio lag tracking via per-connection output sample counter.
 //
-// The backend increments audio_seq by the number of samples in each emitted
-// audio chunk and broadcasts the current value once per second in audio_stats.
-// The browser knows how many samples it has *played* via _audEl.currentTime
-// (for the WAV stream: currentTime × AUDIO_RATE = samples played since stream
-// started).  True lag = (server_seq - played_samples) / AUDIO_RATE * 1000 ms.
+// The server tracks q.out_samples for each /stream client: every PCM chunk
+// sent (real audio AND injected silence) increments it.  audio_stats broadcasts
+// this once per second.  The browser's _audEl.currentTime × AUDIO_RATE equals
+// samples played since the stream connected.  Both counters reset to 0 at
+// connection time, so lag = (out_samples - currentTime × AUDIO_RATE) / AUDIO_RATE.
 //
-// This is far more accurate than wall-clock math, which breaks whenever the
-// browser pre-buffers aggressively or the stream is reloaded.
-const _AUDIO_RATE = 24000;           // must match server AUDIO_RATE
-let _serverAudioSeq  = 0;            // latest audio_seq from audio_stats
-let _streamSampleOff = 0;            // _audEl.currentTime=0 corresponds to this server sample
-let _lagEstMs        = 0;            // computed lag (updated by _tickLag, read by _audioLagMs)
+// This is correct even during long idle periods where only silence is injected
+// (scanner.audio_seq does NOT advance during silence, so using it collapses lag
+// to 0 after idle time and the UI fires 4+ seconds before audio is heard).
+const _AUDIO_RATE    = 24000;    // must match server AUDIO_RATE
+let _serverAudioSeq  = 0;        // latest audio_seq from audio_stats (display only)
+let _lastOutSamples  = 0;        // latest out_samples from audio_stats
+let _lagEstMs        = 0;        // current lag estimate in ms
 
 function _tickLag() {
-  if (_mseActive || _isNativeApp || !_audEl || _audEl.paused) return;
+  // Interpolate between audio_stats broadcasts using the last known out_samples.
+  // As the browser plays more audio (currentTime increases), lag decreases
+  // correctly without waiting for the next audio_stats update.
+  if (_mseActive || _isNativeApp || !_audEl || _audEl.paused || !_lastOutSamples) return;
   if (_audEl.currentTime < 0.3) return;
-  const playedSamples = _streamSampleOff + _audEl.currentTime * _AUDIO_RATE;
-  const lag = Math.max(0, (_serverAudioSeq - playedSamples) / _AUDIO_RATE * 1000);
-  if (lag > 30000) return;    // ignore wildly implausible values
-  _lagEstMs = lag;
+  const raw = Math.max(0, (_lastOutSamples - _audEl.currentTime * _AUDIO_RATE) / _AUDIO_RATE * 1000);
+  if (raw < 30000) _lagEstMs = raw;
 }
 setInterval(_tickLag, 200);
 
@@ -717,10 +719,9 @@ function _initAudEl() {
   } else {
     // Desktop: simple WAV stream with Web Audio graph for HP/LP filtering,
     // volume, and squelch gate.
-    // Reset sample offset: when the stream (re)connects, currentTime resets to 0
-    // and the server's audio_seq is wherever it currently is.  The offset anchors
-    // played-samples back to the server's coordinate space.
-    _streamSampleOff = _serverAudioSeq;
+    // Both out_samples (server) and currentTime (browser) reset to 0 at connect,
+    // so no offset is needed — reset our tracker so lag starts fresh.
+    _lastOutSamples = 0;
     _lagEstMs = 0;
     _audEl.src = '/stream';
     _initWebAudioGraph();
@@ -872,7 +873,7 @@ function _reloadStream() {
   if (_mseActive) {
     _mseConnect();
   } else {
-    _streamSampleOff = _serverAudioSeq;
+    _lastOutSamples = 0;
     _lagEstMs = 0;
     _audEl.load();
     _audEl.play().catch(() => updateAudioUI());
@@ -1018,11 +1019,13 @@ function onMsg(m) {
     }
   } else if (m.type === 'audio_stats') {
     if (m.audio_seq !== undefined) _serverAudioSeq = m.audio_seq;
-    // Desktop lag: use per-stream out_samples (includes injected silence)
-    // so lag stays accurate during squelch-closed idle periods.
-    if (!_mseActive && !_isNativeApp && m.out_samples !== undefined && _audEl && _audEl.currentTime > 0.3) {
-      const playedSamples = _streamSampleOff + _audEl.currentTime * _AUDIO_RATE;
-      const raw = Math.max(0, (m.out_samples - playedSamples) / _AUDIO_RATE * 1000);
+    if (m.out_samples !== undefined) _lastOutSamples = m.out_samples;
+    // Desktop lag: out_samples and currentTime both reset to 0 at stream connect,
+    // so no offset arithmetic needed.  out_samples includes injected silence, so
+    // lag stays accurate during idle periods (unlike audio_seq which only counts
+    // real signal audio and collapses lag to 0 after quiet periods).
+    if (!_mseActive && !_isNativeApp && _lastOutSamples && _audEl && _audEl.currentTime > 0.3) {
+      const raw = Math.max(0, (_lastOutSamples - _audEl.currentTime * _AUDIO_RATE) / _AUDIO_RATE * 1000);
       if (raw < 30000) _lagEstMs = raw;
     }
     // Header lag badge
@@ -1046,14 +1049,10 @@ function onMsg(m) {
     s.activeSince   = m.time;
     s.lastError     = null;
     s.detectedCTCSS = null;   // clear on each new frequency
-    // Use audio_seq from freq_change (exact sample position when TX started)
-    // to compute lag precisely rather than estimating from wall-clock.
-    // txLagMs is snapshotted here so all UI events in this transmission use
-    // the same delay — avoids the name appearing 2-3 s before the signal bar.
-    if (m.audio_seq !== undefined && !_mseActive && !_isNativeApp && _audEl) {
-      const playedSamples = _streamSampleOff + _audEl.currentTime * _AUDIO_RATE;
-      _lagEstMs = Math.max(0, (m.audio_seq - playedSamples) / _AUDIO_RATE * 1000);
-    }
+    // Snapshot _lagEstMs now (maintained by _tickLag / audio_stats) so all UI
+    // events in this transmission use the same delay.  Do NOT recompute from
+    // m.audio_seq here — audio_seq ignores injected silence, so after idle
+    // periods it makes lag appear 0 and the UI fires 4+ s before audio arrives.
     const _fcLag = _audioLagMs();
     s.txLagMs = _fcLag;
     console.log(`[ws] freq_change ${m.freq} mount=${m.mount} audMount=${audMount} lag=${_fcLag}ms sqtail=${A.sqtail}`);
