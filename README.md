@@ -2,18 +2,7 @@
 
 A web-based RTL-SDR frequency scanner with a live browser UI and real-time audio streaming. Runs as a self-contained Python server — no external SDR software required.
 
-```
-┌─ My Scanner ─────────────────────────────────────────────────────────────┐
-│  154.250 MHz   Fire Dispatch        ▶ RX   ⏸ HOLD   SCANNING            │
-│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━  -12 dB                                  │
-│                                                                          │
-│  ▼ Channel Bank                                                          │
-│    154.250  Fire Dispatch                                  SKIP  HOLD    │
-│    155.400  EMS Channel                                    SKIP  HOLD    │
-│    162.400  NOAA Weather                                   SKIP  HOLD    │
-│  + Add channel                                                           │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+![RTL Scanner UI](docs/screenshot.png)
 
 ## Requirements
 
