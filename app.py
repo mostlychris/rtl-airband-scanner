@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.8"
+VERSION    = "2.8.0"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -526,30 +526,35 @@ let _gateGain        = 1.0;
 let _gateCloseTimer  = null;   // handle for pending delayed _setGate(false)
 let audMount         = null;
 
-// Desktop audio lag tracking via wall-clock vs. play-position.
-// _audEl.buffered is unreliable for infinite WAV streams — Chrome may report
-// a near-zero buffered range even when the play position is 2 s behind the
-// live edge.  Instead: record when the stream connection opened (_streamT0)
-// and measure lag = (wall_elapsed - _audEl.currentTime).  Sampled every
-// 200 ms into an EMA so _audioLagMs() returns a stable estimate even at the
-// exact moment a new WebSocket event fires.
-let _streamT0  = null;   // Date.now() when /stream src was set
-let _lagEstMs  = 0;      // EMA of desktop lag; starts at 0, corrects quickly
+// Audio lag tracking via sequence-number comparison.
+//
+// The backend increments audio_seq by the number of samples in each emitted
+// audio chunk and broadcasts the current value once per second in audio_stats.
+// The browser knows how many samples it has *played* via _audEl.currentTime
+// (for the WAV stream: currentTime × AUDIO_RATE = samples played since stream
+// started).  True lag = (server_seq - played_samples) / AUDIO_RATE * 1000 ms.
+//
+// This is far more accurate than wall-clock math, which breaks whenever the
+// browser pre-buffers aggressively or the stream is reloaded.
+const _AUDIO_RATE = 24000;           // must match server AUDIO_RATE
+let _serverAudioSeq  = 0;            // latest audio_seq from audio_stats
+let _streamSampleOff = 0;            // _audEl.currentTime=0 corresponds to this server sample
+let _lagEstMs        = 0;            // computed lag (updated by _tickLag, read by _audioLagMs)
 
-function _tickDesktopLag() {
-  if (_mseActive || _isNativeApp || !_audEl || _audEl.paused || _streamT0 === null) return;
-  if (_audEl.currentTime < 0.3) return;   // not yet playing stably
-  const raw = Math.max(0, (Date.now() - _streamT0) - _audEl.currentTime * 1000);
-  if (raw > 10000) return;               // ignore implausible outliers (>10 s)
-  // Jump straight to the first valid measurement; EMA from there.
-  _lagEstMs = _lagEstMs < 50 ? raw : _lagEstMs * 0.8 + raw * 0.2;
+function _tickLag() {
+  if (_mseActive || _isNativeApp || !_audEl || _audEl.paused) return;
+  if (_audEl.currentTime < 0.3) return;
+  const playedSamples = _streamSampleOff + _audEl.currentTime * _AUDIO_RATE;
+  const lag = Math.max(0, (_serverAudioSeq - playedSamples) / _AUDIO_RATE * 1000);
+  if (lag > 30000) return;    // ignore wildly implausible values
+  _lagEstMs = lag;
 }
-setInterval(_tickDesktopLag, 200);
+setInterval(_tickLag, 200);
 
-// Returns how many milliseconds the audio lags behind real-time WebSocket events.
-// MSE path (Android): read directly from the SourceBuffer buffered range.
-// Desktop path: use the wall-clock/play-position EMA computed above.
-// Native app: no buffering, returns 0.
+// Returns how many milliseconds the audio lags behind the WebSocket events.
+// Desktop WAV: derived from monotonic sequence numbers (accurate).
+// MSE/Android: SourceBuffer buffered-range depth (good enough).
+// Native app: 0 (no pipeline buffering).
 function _audioLagMs() {
   if (_isNativeApp) return 0;
   if (_mseActive && _mseSb && _mseSb.buffered.length && _audEl) {
@@ -710,7 +715,10 @@ function _initAudEl() {
   } else {
     // Desktop: simple WAV stream with Web Audio graph for HP/LP filtering,
     // volume, and squelch gate.
-    _streamT0 = Date.now();
+    // Reset sample offset: when the stream (re)connects, currentTime resets to 0
+    // and the server's audio_seq is wherever it currently is.  The offset anchors
+    // played-samples back to the server's coordinate space.
+    _streamSampleOff = _serverAudioSeq;
     _lagEstMs = 0;
     _audEl.src = '/stream';
     _initWebAudioGraph();
@@ -743,8 +751,8 @@ async function _mseConnect() {
     ? new Promise(r => sb.addEventListener('updateend', r, { once: true }))
     : Promise.resolve();
 
-  const TARGET_LAG = 2.0;   // seconds behind live edge to target after a seek
-  const MAX_LAG    = 5.0;   // seconds; seek only if genuinely far behind
+  const TARGET_LAG = 0.9;   // seconds behind live edge to target after a seek
+  const MAX_LAG    = 2.5;   // seconds; seek only if genuinely far behind
 
   // canplay handler: resumes playback and (once) seeks to the live edge.
   //
@@ -856,7 +864,7 @@ function _reloadStream() {
   if (_mseActive) {
     _mseConnect();
   } else {
-    _streamT0 = Date.now();
+    _streamSampleOff = _serverAudioSeq;
     _lagEstMs = 0;
     _audEl.load();
     _audEl.play().catch(() => updateAudioUI());
@@ -1000,16 +1008,30 @@ function onMsg(m) {
       }
       updateAudioUI();
     }
+  } else if (m.type === 'audio_stats') {
+    // Update server-side sequence counter used for lag computation.
+    if (m.audio_seq !== undefined) _serverAudioSeq = m.audio_seq;
+    const dbgEl = document.getElementById('audio-dbg-line');
+    if (dbgEl) {
+      const lagMs = _lagEstMs.toFixed(0);
+      const gateVal = _gateNode ? _gateNode.gain.value.toFixed(2) : String(_gateGain);
+      const elState = _audEl ? (_audEl.paused ? 'paused' : 'playing') + '/rs' + _audEl.readyState : 'none';
+      dbgEl.textContent = `seq:${m.audio_seq} q:${m.queue_depth} lag:${lagMs}ms gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
+    }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
     s.activeFreq    = m.freq;
     s.activeSince   = m.time;
     s.lastError     = null;
     s.detectedCTCSS = null;   // clear on each new frequency
-    // Snapshot lag now so all UI events for this transmission use the same
-    // delay — prevents the card updating with lag=0 (cold start) while
-    // signal-bar events later use a fully-converged lag, creating an apparent
-    // 2-3 s gap between the name appearing and the bar filling.
+    // Use audio_seq from freq_change (exact sample position when TX started)
+    // to compute lag precisely rather than estimating from wall-clock.
+    // txLagMs is snapshotted here so all UI events in this transmission use
+    // the same delay — avoids the name appearing 2-3 s before the signal bar.
+    if (m.audio_seq !== undefined && !_mseActive && !_isNativeApp && _audEl) {
+      const playedSamples = _streamSampleOff + _audEl.currentTime * _AUDIO_RATE;
+      _lagEstMs = Math.max(0, (m.audio_seq - playedSamples) / _AUDIO_RATE * 1000);
+    }
     const _fcLag = _audioLagMs();
     s.txLagMs = _fcLag;
     console.log(`[ws] freq_change ${m.freq} mount=${m.mount} audMount=${audMount} lag=${_fcLag}ms sqtail=${A.sqtail}`);
@@ -1805,6 +1827,11 @@ class RTLFMScanner:
         self.hold_freq: str | None = None   # non-None = scanner locked to this frequency
         self.connected     = False
         self.last_error: str | None = None
+        # Monotonic sample counter — incremented by len(audio_samples) each time
+        # audio is emitted.  Embedded in freq_change so the client knows exactly
+        # which sample position the transmission started at; also in audio_stats
+        # telemetry so the client can compute true lag without wall-clock estimates.
+        self.audio_seq: int = 0
         self._resume_event = threading.Event()  # set to force immediate scan advance
 
     @property
@@ -1888,6 +1915,9 @@ class RTLFMScanner:
         if self._on_event: self._on_event(evt)
 
     def _emit_audio(self, pcm: bytes):
+        # Advance the sequence counter before dispatching so that any freq_change
+        # emitted in the same chunk sees the sample position AFTER this audio block.
+        self.audio_seq += len(pcm) // 2   # bytes → 16-bit samples
         if self._on_audio: self._on_audio(pcm)
 
     def _loop(self):
@@ -2237,9 +2267,10 @@ class RTLFMScanner:
                                 if self.debug:
                                     print(f"[Scanner] active: {freq_str} MHz  ({db:.1f} dB)")
                                 self._emit({
-                                    "type":  "freq_change", "mount": "sdr",
-                                    "name":  self.name, "freq": freq_str, "label": label,
-                                    "time":  now.isoformat(),
+                                    "type":      "freq_change", "mount": "sdr",
+                                    "name":      self.name, "freq": freq_str, "label": label,
+                                    "time":      now.isoformat(),
+                                    "audio_seq": self.audio_seq,
                                 })
                     else:
                         open_debounce = 0
@@ -2413,21 +2444,60 @@ def _emit(event: dict):
         asyncio.run_coroutine_threadsafe(_evq.put(event), _evloop)
 
 
+_audio_stats_seq: int = 0          # audio_seq value at last stats broadcast
+_audio_stats_max_depth: int = 0    # rolling max queue depth since last broadcast
+
 def _audio_cb(pcm: bytes):
     if _evloop and _audio_clients:
         asyncio.run_coroutine_threadsafe(_dispatch_audio(pcm), _evloop)
 
 
 async def _dispatch_audio(pcm: bytes):
+    global _audio_stats_max_depth
+    max_depth = 0
     for q in list(_audio_clients):
-        try: q.put_nowait(pcm)
-        except asyncio.QueueFull: pass
+        # Drop-oldest policy: if the queue is full, evict the head chunk
+        # before pushing the new one.  This bounds latency — the queue
+        # represents unplayed audio; if a client can't keep up, older
+        # audio is discarded rather than making lag grow without bound.
+        if q.full():
+            try: q.get_nowait()
+            except Exception: pass
+        try:
+            q.put_nowait(pcm)
+            depth = q.qsize()
+            if depth > max_depth:
+                max_depth = depth
+        except asyncio.QueueFull:
+            pass
+    if max_depth > _audio_stats_max_depth:
+        _audio_stats_max_depth = max_depth
 
 
 async def _bcast_loop():
     while True:
         event = await _evq.get()
         await wsman.broadcast(event)
+
+
+async def _audio_stats_loop():
+    """Broadcast audio_stats once per second so clients can compute true lag
+    from the monotonic audio_seq counter instead of wall-clock estimates."""
+    global _audio_stats_max_depth
+    while True:
+        await asyncio.sleep(1.0)
+        if not scanner or not wsman._clients:
+            _audio_stats_max_depth = 0
+            continue
+        seq   = scanner.audio_seq
+        depth = _audio_stats_max_depth
+        _audio_stats_max_depth = 0
+        await wsman.broadcast({
+            "type":        "audio_stats",
+            "audio_seq":   seq,
+            "queue_depth": depth,           # chunks (× 50 ms = lag budget used)
+            "clients":     len(_audio_clients),
+        })
 
 
 def _state() -> dict:
@@ -2474,6 +2544,7 @@ async def _startup():
     _evloop = asyncio.get_running_loop()
     _evq    = asyncio.Queue()
     asyncio.create_task(_bcast_loop())
+    asyncio.create_task(_audio_stats_loop())
     scanner.start()
     print("Scanner started")
 
@@ -3058,25 +3129,37 @@ async def ws_audio_endpoint(ws: WebSocket,
 
     stream_task = asyncio.create_task(_stream())
 
+    async def _watchdog():
+        """Restart ffmpeg if its stdout goes silent for more than 5 seconds.
+        ffmpeg can hang without exiting if the pipe drains slowly; this catches
+        that case and forces a clean restart by signalling stop."""
+        nonlocal proc, feed_task, stream_task
+        STALL_SECS = 5.0
+        while not stop.is_set():
+            await asyncio.sleep(STALL_SECS)
+            if stop.is_set():
+                break
+            rc = proc.returncode
+            if rc is not None:
+                # ffmpeg exited — trigger reconnect
+                stop.set()
+                break
+
+    watchdog_task = asyncio.create_task(_watchdog())
+
     try:
-        # Wait for the client to disconnect or for _stream/_feed to fail.
-        # Do NOT send anything from this loop — _stream already sends audio
-        # frames continuously (including silence), keeping the connection alive.
-        # A second concurrent sender would interleave with _stream's sends,
-        # corrupt WebSocket framing, and drop the connection.
         while not stop.is_set():
             try:
-                # receive_bytes detects client-initiated close; timeout just
-                # means the client sent nothing (expected — it's receive-only).
                 await asyncio.wait_for(ws.receive_bytes(), timeout=60)
             except asyncio.TimeoutError:
-                pass   # normal — client never sends; stream is keeping conn alive
+                pass
             except Exception:
-                break  # client disconnected
+                break
     finally:
         stop.set()
         feed_task.cancel()
         stream_task.cancel()
+        watchdog_task.cancel()
         try: proc.kill()
         except Exception: pass
         await proc.wait()
