@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.1"
+VERSION    = "2.9.2"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -1045,24 +1045,21 @@ function onMsg(m) {
     }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
-    s.activeFreq    = m.freq;
-    s.activeSince   = m.time;
+    // pendingFreq is set immediately — used for stale-signal-handler detection
+    // and per-channel squelch threshold lookups.  activeFreq / activeSince are
+    // set inside _doFreqChange (delayed by lag) so the card only shows the
+    // channel name/frequency when the audio actually arrives at the speaker.
+    s.pendingFreq   = m.freq;
     s.lastError     = null;
-    s.detectedCTCSS = null;   // clear on each new frequency
-    // Snapshot _lagEstMs now (maintained by _tickLag / audio_stats) so all UI
-    // events in this transmission use the same delay.  Do NOT recompute from
-    // m.audio_seq here — audio_seq ignores injected silence, so after idle
-    // periods it makes lag appear 0 and the UI fires 4+ s before audio arrives.
+    s.detectedCTCSS = null;
+    // Snapshot lag now so all UI events in this transmission use the same delay.
     const _fcLag = _audioLagMs();
     s.txLagMs = _fcLag;
     console.log(`[ws] freq_change ${m.freq} mount=${m.mount} audMount=${audMount} lag=${_fcLag}ms sqtail=${A.sqtail}`);
     const _doFreqChange = () => {
+      s.activeFreq  = m.freq;
+      s.activeSince = m.time;
       updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time);
-      // Browser path: gate is already opened by openAudioStream (called via
-      // switchAudio below).  When sqtail is enabled we explicitly set _sqActive
-      // so the signal{active:false} handler knows it should close the gate.
-      // Without this, _sqActive stays false after the first gate close and the
-      // condition (!m.active && _sqActive) never fires again.
       if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) {
         _sqActive = true;
         console.log('[ws] freq_change gate re-armed via _doFreqChange');
@@ -1072,6 +1069,7 @@ function onMsg(m) {
     if (S.audioOn && (!S.locked || S.locked === m.mount)) switchAudio(m.mount);
   } else if (m.type === 'freq_clear') {
     const s = S.streams[m.mount]; if (!s) return;
+    s.pendingFreq   = null;
     s.activeFreq    = null;
     s.activeSince   = null;
     s.detectedCTCSS = null;
@@ -1080,19 +1078,17 @@ function onMsg(m) {
     if (_fclLag > 100) setTimeout(() => updateCard(m.mount, true), _fclLag);
     else updateCard(m.mount, true);
   } else if (m.type === 'signal') {
-    // Use the lag snapshot taken at freq_change time so the signal bar and card
-    // update together.  Falls back to live _audioLagMs() between transmissions.
     const s2 = S.streams[m.mount];
     const _sigLag = (s2 && s2.txLagMs != null) ? s2.txLagMs : _audioLagMs();
-    // Snapshot the active frequency now so the delayed callback can skip
-    // updates that belong to a previous transmission (freq has since changed).
-    const _sigFreq = s2 ? s2.activeFreq : null;
+    // Use pendingFreq (set immediately on freq_change) for stale detection —
+    // activeFreq is delayed and may still be null or the previous frequency.
+    const _sigFreq = s2 ? s2.pendingFreq : null;
     const _doSignalUI = () => {
       const st = S.streams[m.mount];
-      // Drop stale update: a newer freq_change has started a different TX.
-      if (st && st.activeFreq !== _sigFreq) return;
-      const thr = st ? (st.activeFreq && st.channelSquelch && st.channelSquelch[st.activeFreq]
-        ? st.channelSquelch[st.activeFreq] : (st.defaultSquelch || 0.05)) : 0.05;
+      // Drop update if a newer freq_change has superseded this transmission.
+      if (st && st.pendingFreq !== _sigFreq) return;
+      const thr = st ? (st.pendingFreq && st.channelSquelch && st.channelSquelch[st.pendingFreq]
+        ? st.channelSquelch[st.pendingFreq] : (st.defaultSquelch || 0.05)) : 0.05;
       const thrDb = 20 * Math.log10(Math.max(thr, 1e-9));
       const d = document.getElementById('sqfill_' + eid(m.mount));
       if (d) {
