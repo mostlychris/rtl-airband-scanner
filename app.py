@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.8.0"
+VERSION    = "2.8.1"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -666,10 +666,8 @@ function _dbgAudioStatus() {
   const gateVal  = _gateNode ? _gateNode.gain.value.toFixed(3) : String(_gateGain);
   const elState  = _audEl ? (_audEl.paused ? 'paused' : 'playing') + '/rs' + _audEl.readyState : 'none';
   const lag      = _lagEstMs.toFixed(0);
+  // Console only — UI is updated by audio_stats WS events (has server seq+queue)
   console.log(`[audio-dbg] ctx=${ctxState} gate=${gateVal} _gateGain=${_gateGain} _sqActive=${_sqActive} sqtail=${A.sqtail} el=${elState} lagMs=${lag} mse=${_mseActive}`);
-  // Update visible debug line in UI
-  const dbgEl = document.getElementById('audio-dbg-line');
-  if (dbgEl) dbgEl.textContent = `ctx:${ctxState} gate:${gateVal} sq:${_sqActive?1:0} ${elState} lag:${lag}ms`;
 }
 setInterval(_dbgAudioStatus, 2000);
 
@@ -1013,10 +1011,11 @@ function onMsg(m) {
     if (m.audio_seq !== undefined) _serverAudioSeq = m.audio_seq;
     const dbgEl = document.getElementById('audio-dbg-line');
     if (dbgEl) {
-      const lagMs = _lagEstMs.toFixed(0);
+      const lagMs   = _lagEstMs.toFixed(0);
       const gateVal = _gateNode ? _gateNode.gain.value.toFixed(2) : String(_gateGain);
       const elState = _audEl ? (_audEl.paused ? 'paused' : 'playing') + '/rs' + _audEl.readyState : 'none';
-      dbgEl.textContent = `seq:${m.audio_seq} q:${m.queue_depth} lag:${lagMs}ms gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
+      const ctx     = _audioCtx ? _audioCtx.state : 'none';
+      dbgEl.textContent = `seq:${m.audio_seq} q:${m.queue_depth} lag:${lagMs}ms ctx:${ctx} gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
     }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
