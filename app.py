@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.5"
+VERSION    = "2.7.6"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -465,6 +465,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
       Screen On (keep-alive)
     </label>
   </div>
+  <div id="audio-dbg-line" style="font-size:9px;color:var(--muted);font-family:monospace;margin-top:4px;word-break:break-all"></div>
 </div>
 </div>
 <div class="overlay hidden" id="overlay">
@@ -604,6 +605,9 @@ function _applyVolume() {
     window.AndroidNative.setVolume(A.vol * _gateGain);
   } else if (_volNode && _gateNode) {
     _volNode.gain.value  = A.vol;
+    // Cancel any in-progress automation before setting value directly,
+    // otherwise a running setTargetAtTime(0) ramp overrides the assignment.
+    _gateNode.gain.cancelScheduledValues(0);
     _gateNode.gain.value = _gateGain;
   } else if (_audEl) {
     _audEl.volume = Math.min(1, Math.max(0, A.vol * _gateGain));
@@ -612,14 +616,12 @@ function _applyVolume() {
 
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
+  const prev = _gateGain;
+  _gateGain = open ? 1.0 : 0.0;
+  console.log(`[audio] _setGate(${open}) prev=${prev.toFixed(2)} sqActive=${_sqActive} sqtail=${A.sqtail} ctx=${_audioCtx ? _audioCtx.state : 'none'} nodeGain=${_gateNode ? _gateNode.gain.value.toFixed(3) : 'n/a'}`);
   if (_isNativeApp) {
-    // Native path: smooth 40 ms volume ramp via AudioTrack.setStereoVolume().
-    // Only reached when A.sqtail is enabled (_needGate = A.sqtail).
-    // setVolume() adjusts the HAL volume multiplier and does not touch the
-    // PCM byte stream, so it is safe alongside the 2-byte alignment fix.
-    const from = _gateGain;
-    const to   = open ? 1.0 : 0.0;
-    _gateGain  = to;
+    const from = prev;
+    const to   = _gateGain;
     const STEPS = 10, STEP_MS = 4;  // 40 ms total
     for (let i = 1; i <= STEPS; i++) {
       (function(step) {
@@ -633,30 +635,29 @@ function _setGate(open) {
     }
     return;
   }
-  if (open) {
-    _gateGain = 1.0;
-    if (_gateNode && _audioCtx) {
-      _gateNode.gain.cancelScheduledValues(_audioCtx.currentTime);
-      _gateNode.gain.setTargetAtTime(1.0, _audioCtx.currentTime, 0.01);
-    } else {
-      _applyVolume();
-    }
+  if (_gateNode && _audioCtx) {
+    // cancelScheduledValues(0) cancels ALL events including any in-progress
+    // setTargetAtTime ramp that started in the past — cancelScheduledValues(currentTime)
+    // only cancels future-scheduled events and leaves past-started ramps running.
+    _gateNode.gain.cancelScheduledValues(0);
+    _gateNode.gain.value = _gateGain;
   } else {
-    _gateGain = 0;
-    if (_gateNode && _audioCtx) {
-      _gateNode.gain.cancelScheduledValues(_audioCtx.currentTime);
-      _gateNode.gain.setTargetAtTime(0.0, _audioCtx.currentTime, 0.02);
-    } else {
-      const start = performance.now(), startGain = _gateGain || 1.0, RAMP = 50;
-      const step = ts => {
-        _gateGain = Math.max(0, startGain * (1 - (ts - start) / RAMP));
-        _applyVolume();
-        _gateRaf = _gateGain > 0 ? requestAnimationFrame(step) : null;
-      };
-      _gateRaf = requestAnimationFrame(step);
-    }
+    _applyVolume();
   }
+  _dbgAudioStatus();
 }
+
+function _dbgAudioStatus() {
+  const ctxState = _audioCtx ? _audioCtx.state : 'none';
+  const gateVal  = _gateNode ? _gateNode.gain.value.toFixed(3) : String(_gateGain);
+  const elState  = _audEl ? (_audEl.paused ? 'paused' : 'playing') + '/rs' + _audEl.readyState : 'none';
+  const lag      = _lagEstMs.toFixed(0);
+  console.log(`[audio-dbg] ctx=${ctxState} gate=${gateVal} _gateGain=${_gateGain} _sqActive=${_sqActive} sqtail=${A.sqtail} el=${elState} lagMs=${lag} mse=${_mseActive}`);
+  // Update visible debug line in UI
+  const dbgEl = document.getElementById('audio-dbg-line');
+  if (dbgEl) dbgEl.textContent = `ctx:${ctxState} gate:${gateVal} sq:${_sqActive?1:0} ${elState} lag:${lag}ms`;
+}
+setInterval(_dbgAudioStatus, 2000);
 
 function _initAudEl() {
   // Native app: audio lives entirely in ScannerService (MediaPlayer).
@@ -666,18 +667,27 @@ function _initAudEl() {
   if (_audEl) return;
   _audEl = new Audio();
   _audEl.volume = Math.min(1, Math.max(0, A.vol));
-  _audEl.addEventListener('playing', () => { _retries = 0; clearTimeout(_stallTimer); });
-  _audEl.addEventListener('pause', () => {
-    if (!S.audioOn) return;
-    _audEl.play().catch(() => {});
+  _audEl.addEventListener('playing', () => {
+    _retries = 0; clearTimeout(_stallTimer);
+    console.log('[audio] playing readyState=' + _audEl.readyState + ' currentTime=' + _audEl.currentTime.toFixed(2) + ' gain=' + (_gateNode ? _gateNode.gain.value.toFixed(3) : _gateGain));
+    _dbgAudioStatus();
   });
+  _audEl.addEventListener('pause', () => {
+    console.log('[audio] paused audioOn=' + S.audioOn);
+    if (!S.audioOn) return;
+    _audEl.play().catch((e) => console.warn('[audio] re-play failed:', e));
+  });
+  _audEl.addEventListener('waiting', () => console.log('[audio] waiting (buffering)'));
+  _audEl.addEventListener('canplay', () => console.log('[audio] canplay readyState=' + _audEl.readyState));
   _audEl.addEventListener('stalled', () => {
+    console.warn('[audio] stalled mseActive=' + _mseActive);
     if (!S.audioOn) return;
     if (_mseActive) return;   // MSE watchdog handles recovery
     clearTimeout(_stallTimer);
     _stallTimer = setTimeout(_reloadStream, 4000);
   });
   _audEl.onerror = () => {
+    console.error('[audio] error code=' + (_audEl.error ? _audEl.error.code : '?') + ' msg=' + (_audEl.error ? _audEl.error.message : '?'));
     if (!S.audioOn) return;
     _retries++;
     setTimeout(_reloadStream, Math.min(1000 * _retries, 30000));
@@ -848,12 +858,9 @@ function openAudioStream(mount) {
   audMount  = mount;
   _sqActive = true;
   _gateGain = 1.0;
+  console.log(`[audio] openAudioStream(${mount}) sqtail=${A.sqtail} mseActive=${_mseActive} ctxState=${_audioCtx ? _audioCtx.state : 'none'} paused=${_audEl ? _audEl.paused : 'n/a'}`);
   if (_isNativeApp) {
     // Hand off to ScannerService — AudioTrack handles PCM directly.
-    // Pass the user's HP/LP settings as query params so the server applies
-    // the same Butterworth IIR filtering the browser does via Web Audio API.
-    // Without this, raw FM demodulated noise above ~3 kHz is audible on
-    // AudioTrack (no Web Audio graph), producing open-squelch static bursts.
     window.AndroidNative.startAudio(location.origin + '/stream?lp=' + A.lp + '&hp=' + A.hp);
     _applyVolume();
     _updateMediaSession(true);
@@ -861,20 +868,26 @@ function openAudioStream(mount) {
     return;
   }
   _initAudEl();
-  _applyVolume();
+  // Always open the gate explicitly here so we don't rely on gate state
+  // left over from a previous transmission or a prior _setGate(false) call.
+  _setGate(true);
   // Resume AudioContext if suspended (browsers require user gesture before
   // AudioContext can run; this call is inside a user-gesture handler).
-  if (_audioCtx && _audioCtx.state === 'suspended') _audioCtx.resume();
+  if (_audioCtx && _audioCtx.state === 'suspended') {
+    console.log('[audio] resuming suspended AudioContext');
+    _audioCtx.resume().then(() => console.log('[audio] AudioContext resumed:', _audioCtx.state));
+  }
   if (_audEl.paused) {
-    _audEl.play().catch(() => {
+    console.log('[audio] _audEl paused — calling play()');
+    _audEl.play().catch((e) => {
+      console.warn('[audio] play() failed:', e);
       document.getElementById('overlay').classList.remove('hidden');
     });
   }
   _updateMediaSession(true);
-  // Wake lock: only needed for Android browser path — native app has WiFi lock
-  // and foreground service which are far more effective.
   if (_isAndroidBrowser) _acquireWakeLock();
   updateAudioUI();
+  _dbgAudioStatus();
 }
 
 function closeAudio() {
@@ -990,15 +1003,17 @@ function onMsg(m) {
     // 2-3 s gap between the name appearing and the bar filling.
     const _fcLag = _audioLagMs();
     s.txLagMs = _fcLag;
+    console.log(`[ws] freq_change ${m.freq} mount=${m.mount} audMount=${audMount} lag=${_fcLag}ms sqtail=${A.sqtail}`);
     const _doFreqChange = () => {
       updateCard(m.mount, true); pushActivity(m.name, m.freq, m.label, m.time);
-      // Browser path: open gate when buffered audio catches up to squelch-open moment.
-      // Also reset _sqActive so the signal handler will fire the gate close again
-      // on the next inactive transition (it stays false after a gate close and must
-      // be reset here or the gate never closes after the first transmission).
+      // Browser path: gate is already opened by openAudioStream (called via
+      // switchAudio below).  When sqtail is enabled we explicitly set _sqActive
+      // so the signal{active:false} handler knows it should close the gate.
+      // Without this, _sqActive stays false after the first gate close and the
+      // condition (!m.active && _sqActive) never fires again.
       if (!_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr')) {
         _sqActive = true;
-        _setGate(true);
+        console.log('[ws] freq_change gate re-armed via _doFreqChange');
       }
     };
     if (_fcLag > 100) setTimeout(_doFreqChange, _fcLag); else _doFreqChange();
@@ -1065,8 +1080,11 @@ function onMsg(m) {
     if (A.sqtail && m.mount === (audMount || 'sdr') && !m.active && _sqActive) {
       _sqActive = false;
       const lagMs = _audioLagMs();
+      console.log(`[ws] signal inactive → closing gate in ${lagMs}ms`);
       if (lagMs > 0) setTimeout(() => _setGate(false), lagMs);
       else _setGate(false);
+    } else if (A.sqtail && m.mount === (audMount || 'sdr') && !m.active && !_sqActive) {
+      console.log('[ws] signal inactive but _sqActive=false — gate already closed, skipping');
     }
     if (_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr') && m.active && !_sqActive) {
       _sqActive = true;
