@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.6"
+VERSION    = "2.7.7"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -520,10 +520,11 @@ const A = {
 const _isNativeApp = typeof window.AndroidNative !== 'undefined';
 const _isAndroidBrowser = /Android/i.test(navigator.userAgent) && !_isNativeApp;
 
-let _sqActive  = true;
-let _gateRaf   = null;
-let _gateGain  = 1.0;
-let audMount   = null;
+let _sqActive        = true;
+let _gateRaf         = null;
+let _gateGain        = 1.0;
+let _gateCloseTimer  = null;   // handle for pending delayed _setGate(false)
+let audMount         = null;
 
 // Desktop audio lag tracking via wall-clock vs. play-position.
 // _audEl.buffered is unreliable for infinite WAV streams — Chrome may report
@@ -616,6 +617,14 @@ function _applyVolume() {
 
 function _setGate(open) {
   if (_gateRaf) { cancelAnimationFrame(_gateRaf); _gateRaf = null; }
+  // Opening the gate always cancels any pending delayed close from a prior
+  // transmission.  Without this, a 5+ second delayed close fires during the
+  // next transmission and silences it.
+  if (open && _gateCloseTimer) {
+    clearTimeout(_gateCloseTimer);
+    _gateCloseTimer = null;
+    console.log('[audio] cancelled stale gate-close timer');
+  }
   const prev = _gateGain;
   _gateGain = open ? 1.0 : 0.0;
   console.log(`[audio] _setGate(${open}) prev=${prev.toFixed(2)} sqActive=${_sqActive} sqtail=${A.sqtail} ctx=${_audioCtx ? _audioCtx.state : 'none'} nodeGain=${_gateNode ? _gateNode.gain.value.toFixed(3) : 'n/a'}`);
@@ -1081,8 +1090,12 @@ function onMsg(m) {
       _sqActive = false;
       const lagMs = _audioLagMs();
       console.log(`[ws] signal inactive → closing gate in ${lagMs}ms`);
-      if (lagMs > 0) setTimeout(() => _setGate(false), lagMs);
-      else _setGate(false);
+      if (_gateCloseTimer) { clearTimeout(_gateCloseTimer); _gateCloseTimer = null; }
+      if (lagMs > 0) {
+        _gateCloseTimer = setTimeout(() => { _gateCloseTimer = null; _setGate(false); }, lagMs);
+      } else {
+        _setGate(false);
+      }
     } else if (A.sqtail && m.mount === (audMount || 'sdr') && !m.active && !_sqActive) {
       console.log('[ws] signal inactive but _sqActive=false — gate already closed, skipping');
     }
