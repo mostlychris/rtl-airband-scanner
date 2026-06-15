@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.7.7"
+VERSION    = "2.7.8"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -1099,9 +1099,17 @@ function onMsg(m) {
     } else if (A.sqtail && m.mount === (audMount || 'sdr') && !m.active && !_sqActive) {
       console.log('[ws] signal inactive but _sqActive=false — gate already closed, skipping');
     }
-    if (_isNativeApp && A.sqtail && m.mount === (audMount || 'sdr') && m.active && !_sqActive) {
+    // Gate open on signal{active:true} — for ALL paths, not just native.
+    // freq_change opens the gate when the scanner moves to a new frequency.
+    // But if signal returns on the SAME frequency (hold mode, or fast retune),
+    // no freq_change fires and the gate stays closed indefinitely.
+    // Delay by lag so the gate opens when the audio actually reaches the speaker.
+    if (A.sqtail && m.mount === (audMount || 'sdr') && m.active && !_sqActive) {
       _sqActive = true;
-      _setGate(true);
+      const openLag = _isNativeApp ? 0 : _audioLagMs();
+      console.log(`[ws] signal active → opening gate in ${openLag}ms (same-freq resume or native)`);
+      if (openLag > 100) setTimeout(() => _setGate(true), openLag);
+      else _setGate(true);
     }
   } else if (m.type === 'channels_update') {
     const s = S.streams[m.mount]; if (!s) return;
