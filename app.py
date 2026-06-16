@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.6"
+VERSION    = "2.9.7"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -1085,7 +1085,7 @@ function onMsg(m) {
       }
       const lv = document.getElementById('sqlevel_' + eid(m.mount));
       if (lv) {
-        lv.textContent = m.active || m.db > -90
+        lv.textContent = _sigFreq && (m.active || m.db > -90)
           ? (m.db.toFixed(1) + ' / ' + thrDb.toFixed(1) + ' dB') : '';
         lv.style.color = m.active ? 'var(--green)' : 'var(--muted)';
       }
