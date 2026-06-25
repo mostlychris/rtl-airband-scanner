@@ -1937,6 +1937,7 @@ class RTLFMScanner:
                 return False
             else:
                 self.hold_freq = freq
+                self._resume_event.set()  # break out of current dwell immediately
                 return True
 
     def resume_scan(self) -> None:
