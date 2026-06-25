@@ -196,9 +196,10 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 /* ── Scanner card ─────────────────────────────────────────── */
 .scard{
   background:var(--card);border:1px solid var(--border);border-radius:4px;
-  overflow:hidden;transition:border-color .2s,box-shadow .2s;
+  overflow:clip;transition:border-color .2s,box-shadow .2s;
   box-shadow:0 4px 16px rgba(0,0,0,.6),inset 0 1px 0 rgba(255,255,255,.02)
 }
+.sc-sticky{position:sticky;top:43px;z-index:10;background:var(--card)}
 
 .scard.playing{border-color:rgba(45,255,110,.45);box-shadow:0 0 18px rgba(45,255,110,.1),0 4px 16px rgba(0,0,0,.6)}
 
@@ -319,7 +320,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 .ch-icon:hover{background:var(--card2);color:var(--text)}
 .ch-icon.del:hover{color:var(--red)}
 .ch-icon.skip:hover{color:var(--amber)}
-.ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:.2}
+.ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:.45}
 .ch.skipped .ch-icon.skip{color:var(--amber)}
 .ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 12px;flex-wrap:wrap}
 .ch-edit-in{background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;font-family:var(--mono);min-width:0}
@@ -1342,7 +1343,8 @@ function cardHtml(s) {
     + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
     + (collapsed ? '' : rows + addArea);
 
-  return '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + holdBadge + '</span>' + connStatus + '</div>'
+  return '<div class="sc-sticky">'
+    + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + holdBadge + '</span>' + connStatus + '</div>'
     + errHtml
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
     + '<div class="sc-lbl">' + escHtml(primary) + '</div>'
@@ -1350,6 +1352,7 @@ function cardHtml(s) {
     + '</div>'
     + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span><span class="sq-level" id="sqlevel_' + eid(s.mount) + '"></span></div>'
     + actsHtml
+    + '</div>'
     + '<div class="chlist">' + chBankHtml + '</div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
