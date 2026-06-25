@@ -1432,7 +1432,9 @@ function updateAudioUI() {
 
 // ── Collapse toggles ───────────────────────────────────────────────────────────
 function toggleChBank(mount) {
-  _chCollapsed[mount] = !_chCollapsed[mount];
+  const defaultCollapsed = Object.keys(((S.streams[mount] || {}).channels) || {}).length > 8;
+  const current = _chCollapsed[mount] !== undefined ? _chCollapsed[mount] : defaultCollapsed;
+  _chCollapsed[mount] = !current;
   updateCard(mount);
 }
 function toggleActLog() {
