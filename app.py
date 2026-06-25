@@ -171,6 +171,19 @@ main{flex:1;min-width:0;padding:20px}
 .ac-title{
   font-size:8px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
   color:var(--cyan);opacity:.6;padding-bottom:10px;border-bottom:1px solid var(--panel-b);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.ac-collapse-btn{
+  background:none;border:none;color:var(--muted);cursor:pointer;
+  font-size:11px;padding:0 2px;line-height:1;flex-shrink:0;
+  transition:color .2s,transform .2s;
+}
+.ac-collapse-btn:hover{color:var(--text)}
+@media (min-width:701px){
+  .acontrols.collapsed{width:20px;padding:8px 4px;gap:0;overflow:hidden}
+  .acontrols.collapsed .ac-title span{display:none}
+  .acontrols.collapsed #ac-body{display:none}
+  .acontrols.collapsed .ac-collapse-btn{transform:rotate(180deg)}
 }
 .actl{display:flex;flex-direction:column;gap:5px}
 .actl label{color:var(--muted);user-select:none;letter-spacing:.1em;text-transform:uppercase;font-size:9px}
@@ -427,7 +440,11 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   </div>
 </main>
 <div class="acontrols hidden" id="acontrols">
-  <div class="ac-title">Audio Controls</div>
+  <div class="ac-title">
+    <span>Audio Controls</span>
+    <button class="ac-collapse-btn" onclick="toggleAcPanel()" title="Collapse panel">◀</button>
+  </div>
+  <div id="ac-body">
   <div class="actl">
     <label for="aVol">Volume</label>
     <input type="range" class="aslider" id="aVol" min="0" max="150" value="100" oninput="setVol(this.value)">
@@ -461,6 +478,7 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   <div class="actl" style="flex-direction:column;align-items:flex-start;gap:2px">
     <span style="font-size:10px;color:var(--muted);cursor:pointer;user-select:none" onclick="toggleAudioDbg()">▶ Debug info</span>
     <div id="audio-dbg-line" style="display:none;font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all"></div>
+  </div>
   </div>
 </div>
 </div>
@@ -1391,7 +1409,9 @@ function _startAudio() {
   Object.keys(S.streams).forEach(m => updateCard(m));
 }
 function updateAudioUI() {
-  document.getElementById('acontrols').classList.toggle('hidden', !S.audioOn);
+  const ac = document.getElementById('acontrols');
+  ac.classList.toggle('hidden', !S.audioOn);
+  if (S.audioOn) ac.classList.toggle('collapsed', localStorage.getItem('a_panel_collapsed') === '1');
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
   // Native: MediaPlayer is always "connected" once audMount is set
@@ -1518,6 +1538,11 @@ function setSqTail(v) {
   A.sqtail = v;
   localStorage.setItem('a_sqtail', v);
   if (!v) { _gateGain = 1.0; _applyVolume(); }
+}
+function toggleAcPanel() {
+  const el = document.getElementById('acontrols');
+  const collapsed = el.classList.toggle('collapsed');
+  localStorage.setItem('a_panel_collapsed', collapsed ? '1' : '0');
 }
 function toggleAudioDbg() {
   const d = document.getElementById('audio-dbg-line');
