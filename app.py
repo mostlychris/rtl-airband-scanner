@@ -298,10 +298,12 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
 }
 .sc-chl-hdr:hover{color:var(--cyan)}
 .coll-arrow{font-size:8px;opacity:.5}
-.ch{display:flex;align-items:center;gap:8px;padding:4px 12px;transition:background .15s;cursor:default}
+.ch{display:flex;align-items:center;gap:8px;padding:4px 12px;transition:background .15s;cursor:pointer}
 .ch:hover{background:var(--card2)}
 .ch.active{background:var(--gdim);border-left:2px solid var(--green);padding-left:10px}
 .ch.active:hover{background:rgba(45,255,110,.1)}
+.ch.held{background:rgba(255,176,0,.06);border-left:2px solid var(--amber);padding-left:10px}
+.ch.held:hover{background:rgba(255,176,0,.12)}
 .ch-dot{font-size:9px;color:var(--dim);width:10px;flex-shrink:0;transition:color .2s}
 .ch.active .ch-dot{color:var(--green);text-shadow:var(--glow-sm)}
 .ch-f{font-family:var(--mono);font-size:12px;font-weight:600;width:74px;flex-shrink:0;color:#3a5a6a;transition:color .2s}
@@ -1275,7 +1277,8 @@ function cardHtml(s) {
           + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
           + '</div>';
       } else {
-        rows += '<div class="ch' + (act?' active':'') + (skp?' skipped':'') + '">'
+        const isHeld = f === heldF;
+        rows += '<div class="ch' + (act?' active':'') + (isHeld&&!act?' held':'') + (skp?' skipped':'') + '" onclick="event.stopPropagation();holdChannel(\'' + f + '\')" title="' + (isHeld?'Release hold':'Tune to ' + f + ' MHz') + '">'
           + '<span class="ch-dot">' + (skp ? '─' : act ? '◉' : '○') + '</span>'
           + '<span class="ch-f">' + f + '</span>'
           + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
