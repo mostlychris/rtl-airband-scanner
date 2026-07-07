@@ -2160,12 +2160,26 @@ class RTLFMScanner:
                 sq_just_closed = False
                 open_debounce  = 0
 
+                need_freq_clear = False
                 while self._running:
-                    # Exit inner loop immediately if this freq was skipped mid-dwell.
-                    # Also re-read per-channel overrides each chunk so edits to squelch,
-                    # gain, or PL take effect immediately without waiting for a retune.
+                    # Exit inner loop immediately if this freq was skipped mid-dwell,
+                    # or if hold_freq was changed to a different frequency (click-to-tune
+                    # while active). Checking hold_freq here avoids a race where
+                    # _resume_event is set by toggle_hold but then cleared by the outer
+                    # loop's resume_event.clear() before the inner loop gets to check it.
                     with self._lock:
                         if freq_str in self.skipped:
+                            if squelch_open:
+                                self._active_freq  = None
+                                self._active_since = None
+                                need_freq_clear    = True
+                            break
+                        _hf = self.hold_freq
+                        if _hf is not None and _hf != freq_str:
+                            if squelch_open:
+                                self._active_freq  = None
+                                self._active_since = None
+                                need_freq_clear    = True
                             break
                         threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
                         new_gain  = self.channel_gain.get(freq_str, self.gain)
@@ -2368,6 +2382,9 @@ class RTLFMScanner:
                     elif not active and not squelch_open and n_freqs > 1 and not holding:
                         if time.time() - dwell_start > self.scan_dwell:
                             break
+
+                if need_freq_clear:
+                    self._emit({"type": "freq_clear", "mount": "sdr"})
 
                 scan_idx = (scan_idx + 1) % n_freqs
 
