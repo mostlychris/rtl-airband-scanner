@@ -166,7 +166,8 @@ main{padding:20px}
 }
 .acontrols.hidden{display:none}
 #ac-body{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:4px 18px;padding:4px 14px;flex:1}
-#ac-acts{display:flex;align-items:center;gap:3px;margin-left:auto;padding-left:14px;border-left:1px solid var(--panel-b)}
+#ac-right{display:flex;align-items:center;gap:6px;margin-left:auto;padding-left:14px;border-left:1px solid var(--panel-b)}
+#ac-acts{display:flex;align-items:center;gap:3px}
 #ac-acts .sc-btn{padding:4px 7px;font-size:7px;letter-spacing:.08em;white-space:nowrap}
 #ac-acts .sc-acts{display:flex;gap:3px;padding:0;background:none;border:none}
 .ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0 2px}
@@ -415,14 +416,6 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
     <canvas id="aLPKnob" class="ac-knob" width="52" height="52"></canvas>
     <div class="ac-knob-val" id="aLPLbl">3.0k</div>
   </div>
-  <div class="ac-seg-group">
-    <div class="ac-seg-lbl">HP Cut</div>
-    <div class="ac-seg" id="aHPSeg">
-      <button class="ac-seg-btn" data-val="0" onclick="setHP(0)">OFF</button>
-      <button class="ac-seg-btn" data-val="100" onclick="setHP(100)">100</button>
-      <button class="ac-seg-btn" data-val="300" onclick="setHP(300)">300</button>
-    </div>
-  </div>
   <label class="ac-tog-row">
     <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)" style="display:none">
     <span class="ac-sw"><span class="ac-sw-t"></span></span>
@@ -435,7 +428,15 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
       <span class="ac-tog-lbl">Screen On</span>
     </label>
   </div>
-  <div id="ac-acts"></div>
+  <div id="ac-right">
+    <div class="ac-seg-lbl">HP</div>
+    <div class="ac-seg" id="aHPSeg">
+      <button class="ac-seg-btn" data-val="0" onclick="setHP(0)">OFF</button>
+      <button class="ac-seg-btn" data-val="100" onclick="setHP(100)">100</button>
+      <button class="ac-seg-btn" data-val="300" onclick="setHP(300)">300</button>
+    </div>
+    <div id="ac-acts"></div>
+  </div>
   </div>
 </div>
 </div>
