@@ -169,14 +169,14 @@ main{padding:20px}
 #ac-right{display:flex;align-items:center;gap:6px;margin-left:auto;padding-left:14px;border-left:1px solid var(--panel-b)}
 #ac-acts{display:flex;align-items:center;gap:3px}
 #ac-acts .sc-btn{padding:4px 7px;font-size:7px;letter-spacing:.08em;white-space:nowrap}
-#ac-acts .sc-acts{display:flex;gap:3px;padding:0;background:none;border:none}
+#ac-acts .sc-acts{display:flex;flex-direction:column;gap:2px;padding:0;background:none;border:none}
 .ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0 2px}
 .ac-knob-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65}
 .ac-knob{cursor:ns-resize;display:block;touch-action:none}
 .ac-knob-val{font-family:var(--mono);font-size:10px;color:var(--amber);letter-spacing:.05em}
 .ac-seg-group{padding:6px 0 2px}
 .ac-seg-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65;margin-bottom:5px}
-.ac-seg{display:flex;gap:2px}
+.ac-seg{display:flex;flex-direction:column;gap:2px}
 .ac-seg-btn{flex:1;background:#080c16;border:1px solid #1a2035;color:var(--dim);border-radius:2px;padding:5px 6px;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:var(--mono);transition:all .15s;line-height:1}
 .ac-seg-btn:hover{border-color:#2a3a4a;color:var(--text)}
 .ac-seg-btn.active{background:rgba(45,255,110,.07);border-color:rgba(45,255,110,.4);color:var(--green)}
