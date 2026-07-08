@@ -362,46 +362,33 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
   .acontrols{width:128px;padding:12px 10px;gap:12px}
 }
 
-/* Tablet / mobile: sidebar flips to horizontal bar above content */
+/* Narrow: shrink sidebar, tighten main layout */
 @media (max-width:700px){
-  .app-layout{flex-direction:column;align-items:stretch}
   main{padding:10px}
   .grid{grid-template-columns:1fr;gap:10px;margin-bottom:10px}
-
-  /* Sidebar becomes a compact controls bar above the grid */
-  .acontrols{
-    width:100%;order:-1;
-    flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px 16px;
-    position:static;height:auto;overflow:visible;
-    border-left:none;border-bottom:1px solid #1a2035;
-    padding:8px 14px
-  }
-  .ac-title{display:none}
-  .actl{flex-direction:row;align-items:center;gap:6px}
-  .actl label{font-size:8px;white-space:nowrap}
-  input[type=range].aslider{width:72px}
-  select.asel{width:auto;min-width:80px}
-  .atog{font-size:9px;white-space:nowrap}
-  .avlbl{min-width:26px}
-
-  /* Scanner display: scale down primary text */
+  .acontrols{width:100px;padding:10px 8px;gap:10px}
   .sc-lbl{font-size:20px}
-
-  /* Larger touch targets for buttons */
   .sc-btn{padding:8px 4px;font-size:8px}
   .ch{padding:8px 12px}
-
-  /* Always show per-row actions (no hover on touch screens) */
   .ch-acts{visibility:visible}
-
-  /* Header: drop status text, keep dot indicator */
   header{padding:8px 14px;gap:8px}
   .st{display:none}
   h1{font-size:11px;letter-spacing:.14em}
 }
 
-/* Small phones */
-@media (max-width:420px){
+/* Very narrow: shrink sidebar further */
+@media (max-width:520px){
+  .acontrols{width:80px;padding:8px 6px;gap:8px}
+  .aslider{width:60px}
+  .avlbl{font-size:9px}
+}
+
+/* Extra narrow: auto-collapse sidebar to a strip */
+@media (max-width:400px){
+  .acontrols{width:20px;padding:8px 4px;gap:0;overflow:hidden}
+  .acontrols .ac-title span{display:none}
+  .acontrols #ac-body{display:none}
+  .acontrols .ac-collapse-btn{transform:rotate(180deg)}
   .sc-lbl{font-size:16px}
   .sc-freq{font-size:12px}
   .sc-acts{gap:3px;padding:6px 8px}
