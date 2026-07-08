@@ -155,37 +155,32 @@ h1{font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;c
 .asrc{font-size:10px;color:var(--cyan);letter-spacing:.08em;text-transform:uppercase;opacity:.8}
 
 /* ── Layout ───────────────────────────────────────────────── */
-.app-layout{display:flex;align-items:flex-start;max-width:1260px;margin:0 auto}
-main{flex:1;min-width:0;padding:20px}
+.app-layout{max-width:1260px;margin:0 auto}
+main{padding:20px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:20px}
 
-/* ── Audio controls sidebar ───────────────────────────────── */
+/* ── Audio controls inline bar ────────────────────────────── */
 .acontrols{
-  width:152px;flex-shrink:0;
-  display:flex;flex-direction:column;gap:16px;
-  padding:16px 12px;
-  background:#0b0f18;border-left:1px solid #1a2035;
-  position:sticky;top:43px;height:calc(100vh - 43px);overflow-y:auto;
+  display:flex;flex-direction:row;align-items:center;
+  background:var(--card);border-top:1px solid #0d1520;
 }
 .acontrols.hidden{display:none}
 .ac-title{
-  font-size:8px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
-  color:var(--cyan);opacity:.6;padding-bottom:10px;border-bottom:1px solid var(--panel-b);
-  display:flex;align-items:center;justify-content:space-between;
+  font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--cyan);opacity:.6;
+  display:flex;align-items:center;gap:5px;
+  padding:6px 12px;flex-shrink:0;
+  border-right:1px solid var(--panel-b);
 }
 .ac-collapse-btn{
   background:none;border:none;color:var(--muted);cursor:pointer;
-  font-size:11px;padding:0 2px;line-height:1;flex-shrink:0;
-  transition:color .2s,transform .2s;
+  font-size:10px;padding:0 1px;line-height:1;flex-shrink:0;
+  transition:color .2s;
 }
 .ac-collapse-btn:hover{color:var(--text)}
-@media (min-width:701px){
-  .acontrols.collapsed{width:20px;padding:8px 4px;gap:0;overflow:hidden}
-  .acontrols.collapsed .ac-title span{display:none}
-  .acontrols.collapsed #ac-body{display:none}
-  .acontrols.collapsed .ac-collapse-btn{transform:rotate(180deg)}
-}
-.ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0 2px}
+.acontrols.collapsed #ac-body{display:none}
+#ac-body{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:4px 18px;padding:4px 14px;flex:1}
+.ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0 2px}
 .ac-knob-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65}
 .ac-knob{cursor:ns-resize;display:block;touch-action:none}
 .ac-knob-val{font-family:var(--mono);font-size:10px;color:var(--amber);letter-spacing:.05em}
@@ -367,16 +362,9 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 
 /* ── Responsive ────────────────────────────────────────────── */
 
-/* Narrow desktop / large tablet: tighten sidebar */
-@media (max-width:900px){
-  .acontrols{width:128px;padding:12px 10px;gap:12px}
-}
-
-/* Narrow: shrink sidebar, tighten main layout */
 @media (max-width:700px){
   main{padding:10px}
   .grid{grid-template-columns:1fr;gap:10px;margin-bottom:10px}
-  .acontrols{width:100px;padding:10px 8px;gap:10px}
   .sc-lbl{font-size:20px}
   .sc-btn{padding:8px 4px;font-size:8px}
   .ch{padding:8px 12px}
@@ -386,19 +374,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   h1{font-size:11px;letter-spacing:.14em}
 }
 
-/* Very narrow: shrink sidebar further */
-@media (max-width:520px){
-  .acontrols{width:80px;padding:8px 6px;gap:8px}
-  .aslider{width:60px}
-  .avlbl{font-size:9px}
-}
-
-/* Extra narrow: auto-collapse sidebar to a strip */
 @media (max-width:400px){
-  .acontrols{width:20px;padding:8px 4px;gap:0;overflow:hidden}
-  .acontrols .ac-title span{display:none}
-  .acontrols #ac-body{display:none}
-  .acontrols .ac-collapse-btn{transform:rotate(180deg)}
   .sc-lbl{font-size:16px}
   .sc-freq{font-size:12px}
   .sc-acts{gap:3px;padding:6px 8px}
@@ -442,7 +418,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 <div class="acontrols hidden" id="acontrols">
   <div class="ac-title">
     <span>Audio Controls</span>
-    <button class="ac-collapse-btn" onclick="toggleAcPanel()" title="Collapse panel">◀</button>
+    <button class="ac-collapse-btn" onclick="toggleAcPanel()" title="Collapse">▲</button>
   </div>
   <div id="ac-body">
   <div class="ac-knob-wrap">
@@ -1185,6 +1161,11 @@ function onMsg(m) {
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────────
+function _placeAudioControls() {
+  const slot = document.querySelector('.ac-inline-slot');
+  const ac = document.getElementById('acontrols');
+  if (slot && ac) slot.appendChild(ac);
+}
 function renderAll() {
   const g = document.getElementById('grid'); g.innerHTML = '';
   Object.values(S.streams).forEach(s => {
@@ -1194,6 +1175,7 @@ function renderAll() {
     d.innerHTML = cardHtml(s);
     g.appendChild(d);
   });
+  _placeAudioControls();
 }
 function updateCard(mount, skipIfEditing) {
   const d = document.getElementById('sc' + eid(mount)); if (!d) return;
@@ -1202,6 +1184,7 @@ function updateCard(mount, skipIfEditing) {
   const s = S.streams[mount];
   d.className = cardClass(s);
   d.innerHTML = cardHtml(s);
+  _placeAudioControls();
 }
 function cardClass(s) {
   let c = 'scard';
@@ -1350,6 +1333,7 @@ function cardHtml(s) {
     + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span><span class="sq-level" id="sqlevel_' + eid(s.mount) + '"></span></div>'
     + actsHtml
     + '</div>'
+    + '<div class="ac-inline-slot"></div>'
     + '<div class="chlist">' + chBankHtml + '</div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
@@ -1414,7 +1398,13 @@ function _startAudio() {
 function updateAudioUI() {
   const ac = document.getElementById('acontrols');
   ac.classList.toggle('hidden', !S.audioOn);
-  if (S.audioOn) ac.classList.toggle('collapsed', localStorage.getItem('a_panel_collapsed') === '1');
+  _placeAudioControls();
+  if (S.audioOn) {
+    const col = localStorage.getItem('a_panel_collapsed') === '1';
+    ac.classList.toggle('collapsed', col);
+    const cb = ac.querySelector('.ac-collapse-btn');
+    if (cb) cb.textContent = col ? '▼' : '▲';
+  }
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
   // Native: MediaPlayer is always "connected" once audMount is set
@@ -1608,6 +1598,8 @@ function toggleAcPanel() {
   const el = document.getElementById('acontrols');
   const collapsed = el.classList.toggle('collapsed');
   localStorage.setItem('a_panel_collapsed', collapsed ? '1' : '0');
+  const btn = el.querySelector('.ac-collapse-btn');
+  if (btn) btn.textContent = collapsed ? '▼' : '▲';
 }
 function toggleAudioDbg() {
   const d = document.getElementById('audio-dbg-line');
