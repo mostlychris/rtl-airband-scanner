@@ -1157,7 +1157,7 @@ function _actsHtml(s) {
     + (afSkp ? '▶ SCAN' : '⊘ SKIP') + '</button>'
     + '<button class="sc-btn hold' + (isHeld?' active':'') + '" onclick="event.stopPropagation();' + (holdTarget?'holdChannel(\''+holdTarget+'\')':'') + '" title="' + (isHeld?'Release hold — resume scanning':'Hold on current frequency') + '">'
     + (isHeld ? '⏹ HELD' : '⏸ HOLD') + '</button>'
-    + (af && !isHeld ? '<button class="sc-btn resume" onclick="event.stopPropagation();resumeScan()" title="Skip to next frequency now">▶▶ NEXT</button>' : '')
+    + '<button class="sc-btn resume" onclick="event.stopPropagation();resumeScan()" title="Skip to next frequency now"' + (af && !isHeld ? '' : ' style="visibility:hidden"') + '>▶▶ NEXT</button>'
     + '<button class="sc-btn edit" onclick="event.stopPropagation();' + (af?'editChannel(\''+af+'\')':'') + '" title="Edit label/squelch">✏ EDIT</button>'
     + '<button class="sc-btn del" onclick="event.stopPropagation();' + (af?'deleteChannel(\''+af+'\')':'') + '" title="Remove channel">✕ DEL</button>'
     + '</div>';
