@@ -215,7 +215,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   background:var(--panel);
   padding:12px 14px 10px;
   border-bottom:1px solid var(--panel-b);
-  height:76px;box-sizing:border-box;overflow:hidden;
+  box-sizing:border-box;overflow:hidden;
 }
 .sc-lbl{
   font-family:var(--mono);font-size:26px;font-weight:600;
@@ -225,7 +225,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   transition:color .4s,text-shadow .4s;
 }
 .sc-display.active .sc-lbl{color:var(--green);text-shadow:var(--glow)}
-.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:6px}
+.sc-meta{display:flex;align-items:center;gap:10px;margin-top:6px;height:16px;overflow:hidden}
 .sc-freq{
   font-family:var(--mono);font-size:13px;font-weight:500;
   letter-spacing:.06em;color:var(--muted);
