@@ -165,21 +165,10 @@ main{padding:20px}
   background:var(--card);border-top:1px solid #0d1520;
 }
 .acontrols.hidden{display:none}
-.ac-title{
-  font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
-  color:var(--cyan);opacity:.6;
-  display:flex;align-items:center;gap:5px;
-  padding:6px 12px;flex-shrink:0;
-  border-right:1px solid var(--panel-b);
-}
-.ac-collapse-btn{
-  background:none;border:none;color:var(--muted);cursor:pointer;
-  font-size:10px;padding:0 1px;line-height:1;flex-shrink:0;
-  transition:color .2s;
-}
-.ac-collapse-btn:hover{color:var(--text)}
-.acontrols.collapsed #ac-body{display:none}
 #ac-body{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:4px 18px;padding:4px 14px;flex:1}
+#ac-acts{display:flex;align-items:center;gap:3px;margin-left:auto;padding-left:14px;border-left:1px solid var(--panel-b)}
+#ac-acts .sc-btn{padding:4px 7px;font-size:7px;letter-spacing:.08em}
+#ac-acts .sc-acts{display:flex;gap:3px;padding:0;background:none;border:none}
 .ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0 2px}
 .ac-knob-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65}
 .ac-knob{cursor:ns-resize;display:block;touch-action:none}
@@ -196,7 +185,6 @@ main{padding:20px}
 input:checked~.ac-sw{background:rgba(45,255,110,.15);border-color:rgba(45,255,110,.35)}
 input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .ac-tog-lbl{font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
-.ac-dbg{padding:4px 0;font-size:9px;color:var(--muted);cursor:pointer;user-select:none;letter-spacing:.05em;border-top:1px solid #0d1420;margin-top:4px}
 
 /* ── Scanner card ─────────────────────────────────────────── */
 .scard{
@@ -416,10 +404,6 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   </div>
 </main>
 <div class="acontrols hidden" id="acontrols">
-  <div class="ac-title">
-    <span>Audio Controls</span>
-    <button class="ac-collapse-btn" onclick="toggleAcPanel()" title="Collapse">▲</button>
-  </div>
   <div id="ac-body">
   <div class="ac-knob-wrap">
     <div class="ac-knob-lbl">Volume</div>
@@ -451,10 +435,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
       <span class="ac-tog-lbl">Screen On</span>
     </label>
   </div>
-  <div class="ac-dbg">
-    <span onclick="toggleAudioDbg()">▶ Debug</span>
-    <div id="audio-dbg-line" style="display:none;font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all;margin-top:4px"></div>
-  </div>
+  <div id="ac-acts"></div>
   </div>
 </div>
 </div>
@@ -1161,6 +1142,30 @@ function onMsg(m) {
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────────
+function _actsHtml(s) {
+  const af = s.activeFreq;
+  const heldF = s.holdFreq || null;
+  const isHeld = !!heldF;
+  const skpSet = new Set(s.skipped || []);
+  const afSkp = af && skpSet.has(af);
+  const noAf = !af;
+  const holdTarget = af || heldF;
+  return '<div class="sc-acts' + (noAf && !isHeld ? ' idle' : '') + '">'
+    + '<button class="sc-btn skip' + (afSkp?' active':'') + '" onclick="event.stopPropagation();' + (af?'skipChannel(\''+af+'\')':'') + '" title="' + (afSkp?'Resume scan':'Skip channel') + '">'
+    + (afSkp ? '▶ SCAN' : '⊘ SKIP') + '</button>'
+    + '<button class="sc-btn hold' + (isHeld?' active':'') + '" onclick="event.stopPropagation();' + (holdTarget?'holdChannel(\''+holdTarget+'\')':'') + '" title="' + (isHeld?'Release hold — resume scanning':'Hold on current frequency') + '">'
+    + (isHeld ? '⏹ HELD' : '⏸ HOLD') + '</button>'
+    + (af && !isHeld ? '<button class="sc-btn resume" onclick="event.stopPropagation();resumeScan()" title="Skip to next frequency now">▶▶ NEXT</button>' : '')
+    + '<button class="sc-btn edit" onclick="event.stopPropagation();' + (af?'editChannel(\''+af+'\')':'') + '" title="Edit label/squelch">✏ EDIT</button>'
+    + '<button class="sc-btn del" onclick="event.stopPropagation();' + (af?'deleteChannel(\''+af+'\')':'') + '" title="Remove channel">✕ DEL</button>'
+    + '</div>';
+}
+function _updateAcActs(mount) {
+  const el = document.getElementById('ac-acts');
+  if (!el) return;
+  const s = S.streams[mount];
+  if (s) el.innerHTML = _actsHtml(s);
+}
 function _placeAudioControls() {
   const slot = document.querySelector('.ac-inline-slot');
   const ac = document.getElementById('acontrols');
@@ -1179,8 +1184,9 @@ function renderAll() {
     d.id = 'sc' + eid(s.mount);
     d.innerHTML = cardHtml(s);
     g.appendChild(d);
+    _placeAudioControls();
+    _updateAcActs(s.mount);
   });
-  _placeAudioControls();
 }
 function updateCard(mount, skipIfEditing) {
   const d = document.getElementById('sc' + eid(mount)); if (!d) return;
@@ -1191,6 +1197,7 @@ function updateCard(mount, skipIfEditing) {
   _rescueAudioControls();
   d.innerHTML = cardHtml(s);
   _placeAudioControls();
+  _updateAcActs(mount);
 }
 function cardClass(s) {
   let c = 'scard';
@@ -1226,21 +1233,6 @@ function cardHtml(s) {
     : '<span class="sc-status ' + (s.lastError ? 'err' : 'warn') + '"><span class="sc-led"></span>' + (s.lastError ? 'ERROR' : 'OPENING') + '</span>';
   const errHtml = s.lastError
     ? '<div class="serr">⚠ ' + escHtml(s.lastError) + '</div>' : '';
-
-  // Action buttons (always rendered; disabled when no active freq)
-  const noAf   = !af;
-  const afSkp  = af && skpSet.has(af);
-  // HOLD target: active freq if available, otherwise the currently held freq (to release)
-  const holdTarget = af || heldF;
-  const actsHtml = '<div class="sc-acts' + (noAf && !isHeld ? ' idle' : '') + '">'
-    + '<button class="sc-btn skip' + (afSkp?' active':'') + '" onclick="event.stopPropagation();' + (af?'skipChannel(\''+af+'\')':'') + '" title="' + (afSkp?'Resume scan':'Skip channel') + '">'
-    + (afSkp ? '▶ SCAN' : '⊘ SKIP') + '</button>'
-    + '<button class="sc-btn hold' + (isHeld?' active':'') + '" onclick="event.stopPropagation();' + (holdTarget?'holdChannel(\''+holdTarget+'\')':'') + '" title="' + (isHeld?'Release hold — resume scanning':'Hold on current frequency') + '">'
-    + (isHeld ? '⏹ HELD' : '⏸ HOLD') + '</button>'
-    + (af && !isHeld ? '<button class="sc-btn resume" onclick="event.stopPropagation();resumeScan()" title="Skip to next frequency now">▶▶ NEXT</button>' : '')
-    + '<button class="sc-btn edit" onclick="event.stopPropagation();' + (af?'editChannel(\''+af+'\')':'') + '" title="Edit label/squelch">✏ EDIT</button>'
-    + '<button class="sc-btn del" onclick="event.stopPropagation();' + (af?'deleteChannel(\''+af+'\')':'') + '" title="Remove channel">✕ DEL</button>'
-    + '</div>';
 
   // Channel bank rows
   let rows = '';
@@ -1337,7 +1329,6 @@ function cardHtml(s) {
     + metaHtml
     + '</div>'
     + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span><span class="sq-level" id="sqlevel_' + eid(s.mount) + '"></span></div>'
-    + actsHtml
     + '</div>'
     + '<div class="ac-inline-slot"></div>'
     + '<div class="chlist">' + chBankHtml + '</div>';
@@ -1405,12 +1396,6 @@ function updateAudioUI() {
   const ac = document.getElementById('acontrols');
   ac.classList.toggle('hidden', !S.audioOn);
   _placeAudioControls();
-  if (S.audioOn) {
-    const col = localStorage.getItem('a_panel_collapsed') === '1';
-    ac.classList.toggle('collapsed', col);
-    const cb = ac.querySelector('.ac-collapse-btn');
-    if (cb) cb.textContent = col ? '▼' : '▲';
-  }
   const btn = document.getElementById('abtn');
   const src = document.getElementById('asrc');
   // Native: MediaPlayer is always "connected" once audMount is set
@@ -1600,21 +1585,7 @@ function setSqTail(v) {
   localStorage.setItem('a_sqtail', v);
   if (!v) { _gateGain = 1.0; _applyVolume(); }
 }
-function toggleAcPanel() {
-  const el = document.getElementById('acontrols');
-  const collapsed = el.classList.toggle('collapsed');
-  localStorage.setItem('a_panel_collapsed', collapsed ? '1' : '0');
-  const btn = el.querySelector('.ac-collapse-btn');
-  if (btn) btn.textContent = collapsed ? '▼' : '▲';
-}
-function toggleAudioDbg() {
-  const d = document.getElementById('audio-dbg-line');
-  const t = d.previousElementSibling;
-  if (!d) return;
-  const show = d.style.display === 'none';
-  d.style.display = show ? 'block' : 'none';
-  if (t) t.textContent = (show ? '▼' : '▶') + ' Debug info';
-}
+
 function initControls() {
   const vol = Math.round(A.vol * 100);
   _knobSetup('aVolKnob', { min:0, max:150, value:vol, step:1, color:'#2dff6e',
