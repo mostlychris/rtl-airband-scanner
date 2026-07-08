@@ -1166,7 +1166,12 @@ function _placeAudioControls() {
   const ac = document.getElementById('acontrols');
   if (slot && ac) slot.appendChild(ac);
 }
+function _rescueAudioControls() {
+  const ac = document.getElementById('acontrols');
+  if (ac && ac.parentElement && ac.parentElement !== document.body) document.body.appendChild(ac);
+}
 function renderAll() {
+  _rescueAudioControls();
   const g = document.getElementById('grid'); g.innerHTML = '';
   Object.values(S.streams).forEach(s => {
     const d = document.createElement('div');
@@ -1183,6 +1188,7 @@ function updateCard(mount, skipIfEditing) {
   if (skipIfEditing && (_editFreq !== null || _addingCh)) return;
   const s = S.streams[mount];
   d.className = cardClass(s);
+  _rescueAudioControls();
   d.innerHTML = cardHtml(s);
   _placeAudioControls();
 }
