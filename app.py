@@ -225,7 +225,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   transition:color .4s,text-shadow .4s;
 }
 .sc-display.active .sc-lbl{color:var(--green);text-shadow:var(--glow)}
-.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:6px;min-height:18px}
+.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:6px}
 .sc-freq{
   font-family:var(--mono);font-size:13px;font-weight:500;
   letter-spacing:.06em;color:var(--muted);
@@ -1305,15 +1305,15 @@ function cardHtml(s) {
   const activePL    = af && cpl[af] ? cpl[af] : (heldF && cpl[heldF] ? cpl[heldF] : null);
   const initCTCSS   = s.detectedCTCSS || null;
   const ctcssMatch  = initCTCSS && activePL;
-  const metaHtml = (metaFreq || since || activePL || true)   // always render for in-place updates
-    ? '<div class="sc-meta">'
-      + (metaFreq ? '<span class="sc-freq">' + metaFreq + '<span class="sc-unit">MHz</span></span>' : '')
+  // sc-freq is always rendered (hidden when inactive) so the meta row height never changes
+  const metaHtml = '<div class="sc-meta">'
+      + '<span class="sc-freq"' + (metaFreq ? '' : ' style="visibility:hidden"') + '>'
+      + (metaFreq || '–') + '<span class="sc-unit">MHz</span></span>'
       + (activePL ? '<span class="sc-pl">PL ' + activePL + ' Hz</span>' : '')
       + '<span class="sc-ctcss' + (initCTCSS ? (ctcssMatch ? ' match' : ' info') : '') + '" id="sc_ctcss_' + eid(s.mount) + '">'
       + (initCTCSS ? '◈ ' + initCTCSS + ' Hz' : '') + '</span>'
       + (since ? '<span class="sc-timer">' + since + '</span>' : '')
-      + '</div>'
-    : '';
+      + '</div>';
 
   // Default to open when the channel list is short enough to fit without scrolling.
   // User can toggle; once toggled the explicit state is remembered in _chCollapsed.
