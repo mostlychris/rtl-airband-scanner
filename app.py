@@ -185,13 +185,23 @@ main{flex:1;min-width:0;padding:20px}
   .acontrols.collapsed #ac-body{display:none}
   .acontrols.collapsed .ac-collapse-btn{transform:rotate(180deg)}
 }
-.actl{display:flex;flex-direction:column;gap:5px}
-.actl label{color:var(--muted);user-select:none;letter-spacing:.1em;text-transform:uppercase;font-size:9px}
-input[type=range].aslider{width:100%;accent-color:var(--amber);cursor:pointer}
-select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--text);border-radius:3px;padding:3px 6px;font-size:11px;cursor:pointer}
-.atog{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted);cursor:pointer;user-select:none;letter-spacing:.08em;text-transform:uppercase}
-.atog input[type=checkbox]{accent-color:var(--green);cursor:pointer;flex-shrink:0}
-.avlbl{font-family:var(--mono);font-size:11px;color:var(--amber)}
+.ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0 2px}
+.ac-knob-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65}
+.ac-knob{cursor:ns-resize;display:block;touch-action:none}
+.ac-knob-val{font-family:var(--mono);font-size:10px;color:var(--amber);letter-spacing:.05em}
+.ac-seg-group{padding:6px 0 2px}
+.ac-seg-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65;margin-bottom:5px}
+.ac-seg{display:flex;gap:2px}
+.ac-seg-btn{flex:1;background:#080c16;border:1px solid #1a2035;color:var(--dim);border-radius:2px;padding:4px 0;font-size:8px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:var(--mono);transition:all .15s;line-height:1}
+.ac-seg-btn:hover{border-color:#2a3a4a;color:var(--text)}
+.ac-seg-btn.active{background:rgba(45,255,110,.07);border-color:rgba(45,255,110,.4);color:var(--green)}
+.ac-tog-row{display:flex;align-items:center;gap:7px;padding:6px 0;cursor:pointer;user-select:none}
+.ac-sw{width:26px;height:14px;background:#111827;border:1px solid #1a2035;border-radius:7px;flex-shrink:0;position:relative;transition:background .2s,border-color .2s}
+.ac-sw-t{position:absolute;top:2px;left:2px;width:8px;height:8px;border-radius:50%;background:#2a3a4a;transition:left .2s,background .2s}
+input:checked~.ac-sw{background:rgba(45,255,110,.15);border-color:rgba(45,255,110,.35)}
+input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
+.ac-tog-lbl{font-size:8px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.ac-dbg{padding:4px 0;font-size:9px;color:var(--muted);cursor:pointer;user-select:none;letter-spacing:.05em;border-top:1px solid #0d1420;margin-top:4px}
 
 /* ── Scanner card ─────────────────────────────────────────── */
 .scard{
@@ -435,39 +445,39 @@ select.asel{width:100%;background:#0a0e18;border:1px solid #1a2035;color:var(--t
     <button class="ac-collapse-btn" onclick="toggleAcPanel()" title="Collapse panel">◀</button>
   </div>
   <div id="ac-body">
-  <div class="actl">
-    <label for="aVol">Volume</label>
-    <input type="range" class="aslider" id="aVol" min="0" max="150" value="100" oninput="setVol(this.value)">
-    <span class="avlbl" id="aVolLbl">100%</span>
+  <div class="ac-knob-wrap">
+    <div class="ac-knob-lbl">Volume</div>
+    <canvas id="aVolKnob" class="ac-knob" width="52" height="52"></canvas>
+    <div class="ac-knob-val" id="aVolLbl">100%</div>
   </div>
-  <div class="actl">
-    <label for="aHP">HP Filter</label>
-    <select class="asel" id="aHP" onchange="setHP(this.value)">
-      <option value="0">Off</option>
-      <option value="100">100 Hz</option>
-      <option value="300">300 Hz (PL)</option>
-    </select>
+  <div class="ac-knob-wrap">
+    <div class="ac-knob-lbl">LP Cut</div>
+    <canvas id="aLPKnob" class="ac-knob" width="52" height="52"></canvas>
+    <div class="ac-knob-val" id="aLPLbl">3.0k</div>
   </div>
-  <div class="actl">
-    <label for="aLP">LP Filter</label>
-    <input type="range" class="aslider" id="aLP" min="2000" max="8000" step="500" value="3000" oninput="setLP(this.value)">
-    <span class="avlbl" id="aLPLbl">3.0 kHz</span>
+  <div class="ac-seg-group">
+    <div class="ac-seg-lbl">HP Cut</div>
+    <div class="ac-seg" id="aHPSeg">
+      <button class="ac-seg-btn" data-val="0" onclick="setHP(0)">OFF</button>
+      <button class="ac-seg-btn" data-val="100" onclick="setHP(100)">100</button>
+      <button class="ac-seg-btn" data-val="300" onclick="setHP(300)">300</button>
+    </div>
   </div>
-  <div class="actl">
-    <label class="atog">
-      <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)">
-      SQ Tail Cut
+  <label class="ac-tog-row">
+    <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)" style="display:none">
+    <span class="ac-sw"><span class="ac-sw-t"></span></span>
+    <span class="ac-tog-lbl">SQ Tail</span>
+  </label>
+  <div id="aWakeLockRow" style="display:none">
+    <label class="ac-tog-row">
+      <input type="checkbox" id="aWakeLock" onchange="setWakeLock(this.checked)" style="display:none">
+      <span class="ac-sw"><span class="ac-sw-t"></span></span>
+      <span class="ac-tog-lbl">Screen On</span>
     </label>
   </div>
-  <div class="actl" id="aWakeLockRow" style="display:none">
-    <label class="atog">
-      <input type="checkbox" id="aWakeLock" onchange="setWakeLock(this.checked)">
-      Screen On (keep-alive)
-    </label>
-  </div>
-  <div class="actl" style="flex-direction:column;align-items:flex-start;gap:2px">
-    <span style="font-size:10px;color:var(--muted);cursor:pointer;user-select:none" onclick="toggleAudioDbg()">▶ Debug info</span>
-    <div id="audio-dbg-line" style="display:none;font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all"></div>
+  <div class="ac-dbg">
+    <span onclick="toggleAudioDbg()">▶ Debug</span>
+    <div id="audio-dbg-line" style="display:none;font-size:9px;color:var(--muted);font-family:monospace;word-break:break-all;margin-top:4px"></div>
   </div>
   </div>
 </div>
@@ -1500,33 +1510,93 @@ function addChannel() {
 }
 
 // ── Audio filter / volume controls ────────────────────────────────────────────
+// ── Knob controls ──────────────────────────────────────────────────────────────
+const _knobs = {};
+function _knobSetup(id, cfg) {
+  const c = document.getElementById(id);
+  if (!c) return;
+  _knobs[id] = {...cfg, c};
+  _drawKnob(id);
+  let sy, sv;
+  const move = y => {
+    const range = cfg.max - cfg.min;
+    let v = sv + ((sy - y) / 120) * range;
+    v = Math.max(cfg.min, Math.min(cfg.max, v));
+    if (cfg.step) v = Math.round(v / cfg.step) * cfg.step;
+    _knobs[id].value = v;
+    _drawKnob(id);
+    cfg.onChange(v);
+  };
+  c.addEventListener('mousedown', e => {
+    sy = e.clientY; sv = _knobs[id].value;
+    const mm = e2 => move(e2.clientY);
+    const mu = () => { removeEventListener('mousemove', mm); removeEventListener('mouseup', mu); };
+    addEventListener('mousemove', mm); addEventListener('mouseup', mu);
+    e.preventDefault();
+  });
+  c.addEventListener('touchstart', e => { sy = e.touches[0].clientY; sv = _knobs[id].value; e.preventDefault(); }, {passive:false});
+  c.addEventListener('touchmove',  e => { move(e.touches[0].clientY); e.preventDefault(); }, {passive:false});
+}
+function _drawKnob(id) {
+  const k = _knobs[id]; if (!k) return;
+  const c = k.c, ctx = c.getContext('2d'), w = c.width, cx = w/2, cy = w/2, r = cx - 5;
+  ctx.clearRect(0, 0, w, w);
+  const sa = Math.PI * 0.75, ea = Math.PI * 2.25;
+  const pct = (k.value - k.min) / (k.max - k.min);
+  const va = sa + pct * (ea - sa);
+  // Track
+  ctx.beginPath(); ctx.arc(cx, cy, r, sa, ea);
+  ctx.strokeStyle = '#111827'; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.stroke();
+  // Value arc
+  if (pct > 0) {
+    ctx.beginPath(); ctx.arc(cx, cy, r, sa, va);
+    ctx.strokeStyle = k.color; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.stroke();
+  }
+  // Pointer
+  ctx.beginPath();
+  ctx.arc(cx + Math.cos(va) * (r - 1), cy + Math.sin(va) * (r - 1), 3, 0, Math.PI * 2);
+  ctx.fillStyle = k.color; ctx.fill();
+  // Center
+  ctx.beginPath(); ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#1a2a3a'; ctx.fill();
+}
+function _knobSet(id, value) {
+  if (_knobs[id]) { _knobs[id].value = value; _drawKnob(id); }
+}
+
 function setVol(v) {
+  v = Math.round(v);
   A.vol = v / 100;
   localStorage.setItem('a_vol', A.vol);
   document.getElementById('aVolLbl').textContent = v + '%';
+  _knobSet('aVolKnob', v);
   _applyVolume();
 }
 function setHP(v) {
   A.hp = parseInt(v, 10);
   localStorage.setItem('a_hp', A.hp);
+  document.querySelectorAll('#aHPSeg .ac-seg-btn').forEach(b =>
+    b.classList.toggle('active', parseInt(b.dataset.val) === A.hp));
   if (_hpNode) {
     _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent
   } else if (_mseActive && S.audioOn) {
-    _mseConnect();   // ffmpeg path: reconnect with new filter param
+    _mseConnect();
   } else if (_isNativeApp && audMount) {
-    openAudioStream(audMount);  // native: reconnect stream with updated ?hp= param
+    openAudioStream(audMount);
   }
 }
 function setLP(v) {
-  A.lp = parseInt(v, 10);
+  v = Math.round(v / 500) * 500;
+  A.lp = v;
   localStorage.setItem('a_lp', A.lp);
-  document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
+  document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + 'k';
+  _knobSet('aLPKnob', v);
   if (_lpNode) {
     _lpNode.frequency.value = A.lp;
   } else if (_mseActive && S.audioOn) {
-    _mseConnect();   // ffmpeg path: reconnect with new filter param
+    _mseConnect();
   } else if (_isNativeApp && audMount) {
-    openAudioStream(audMount);  // native: reconnect stream with updated ?lp= param
+    openAudioStream(audMount);
   }
 }
 function setSqTail(v) {
@@ -1549,14 +1619,16 @@ function toggleAudioDbg() {
 }
 function initControls() {
   const vol = Math.round(A.vol * 100);
-  document.getElementById('aVol').value = vol;
+  _knobSetup('aVolKnob', { min:0, max:150, value:vol, step:1, color:'#2dff6e',
+    onChange: v => { document.getElementById('aVolLbl').textContent = Math.round(v) + '%'; A.vol = v/100; localStorage.setItem('a_vol', A.vol); _applyVolume(); }
+  });
   document.getElementById('aVolLbl').textContent = vol + '%';
-  document.getElementById('aLP').value = A.lp;
-  document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + ' kHz';
-  document.getElementById('aHP').value = String(A.hp);
+  _knobSetup('aLPKnob', { min:2000, max:8000, value:A.lp, step:500, color:'#ffb000',
+    onChange: v => { v = Math.round(v/500)*500; document.getElementById('aLPLbl').textContent = (v/1000).toFixed(1)+'k'; A.lp=v; localStorage.setItem('a_lp',v); if(_lpNode)_lpNode.frequency.value=v; else if(_mseActive&&S.audioOn)_mseConnect(); else if(_isNativeApp&&audMount)openAudioStream(audMount); }
+  });
+  document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + 'k';
+  setHP(A.hp);
   document.getElementById('aSqTail').checked = A.sqtail;
-  // Wake Lock toggle: only useful for Android browser path.
-  // Native app has a proper WiFi lock + foreground service; no screen lock needed.
   if (_isAndroidBrowser && 'wakeLock' in navigator)
     document.getElementById('aWakeLockRow').style.display = '';
 }
