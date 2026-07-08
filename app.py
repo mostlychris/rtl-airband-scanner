@@ -215,7 +215,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   background:var(--panel);
   padding:12px 14px 10px;
   border-bottom:1px solid var(--panel-b);
-  min-height:70px;
+  height:76px;box-sizing:border-box;overflow:hidden;
 }
 .sc-lbl{
   font-family:var(--mono);font-size:26px;font-weight:600;
