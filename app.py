@@ -166,8 +166,7 @@ main{padding:20px}
 }
 .acontrols.hidden{display:none}
 #ac-body{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:4px 18px;padding:4px 14px;flex:1}
-#ac-right{display:flex;align-items:center;gap:6px;margin-left:auto;padding-left:14px;border-left:1px solid var(--panel-b)}
-#ac-acts{display:flex;align-items:center;gap:3px}
+#ac-acts-wrap{flex:1;display:flex;justify-content:center;align-items:center}
 #ac-acts .sc-btn{padding:4px 7px;font-size:7px;letter-spacing:.08em;white-space:nowrap}
 #ac-acts .sc-acts{display:flex;flex-direction:column;gap:2px;padding:0;background:none;border:none}
 .ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0 2px}
@@ -416,27 +415,29 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
     <canvas id="aLPKnob" class="ac-knob" width="52" height="52"></canvas>
     <div class="ac-knob-val" id="aLPLbl">3.0k</div>
   </div>
-  <label class="ac-tog-row">
-    <input type="checkbox" id="aSqTail" onchange="setSqTail(this.checked)" style="display:none">
-    <span class="ac-sw"><span class="ac-sw-t"></span></span>
-    <span class="ac-tog-lbl">SQ Tail</span>
-  </label>
-  <div id="aWakeLockRow" style="display:none">
-    <label class="ac-tog-row">
-      <input type="checkbox" id="aWakeLock" onchange="setWakeLock(this.checked)" style="display:none">
-      <span class="ac-sw"><span class="ac-sw-t"></span></span>
-      <span class="ac-tog-lbl">Screen On</span>
-    </label>
-  </div>
-  <div id="ac-right">
-    <div class="ac-seg-lbl">HP</div>
+  <div class="ac-seg-group">
+    <div class="ac-seg-lbl">HP Cut</div>
     <div class="ac-seg" id="aHPSeg">
       <button class="ac-seg-btn" data-val="0" onclick="setHP(0)">OFF</button>
       <button class="ac-seg-btn" data-val="100" onclick="setHP(100)">100</button>
       <button class="ac-seg-btn" data-val="300" onclick="setHP(300)">300</button>
     </div>
-    <div id="ac-acts"></div>
   </div>
+  <div class="ac-seg-group">
+    <div class="ac-seg-lbl">SQ Tail</div>
+    <div class="ac-seg">
+      <button class="ac-seg-btn" id="aSqTailBtn" onclick="toggleSqTail()">ON</button>
+    </div>
+  </div>
+  <div id="aWakeLockRow" style="display:none">
+    <div class="ac-seg-group">
+      <div class="ac-seg-lbl">Screen</div>
+      <div class="ac-seg">
+        <button class="ac-seg-btn" id="aWakeLockBtn" onclick="toggleWakeLock()">ON</button>
+      </div>
+    </div>
+  </div>
+  <div id="ac-acts-wrap"><div id="ac-acts"></div></div>
   </div>
 </div>
 </div>
@@ -1581,9 +1582,12 @@ function setLP(v) {
     openAudioStream(audMount);
   }
 }
+function toggleSqTail() { setSqTail(!A.sqtail); }
 function setSqTail(v) {
   A.sqtail = v;
   localStorage.setItem('a_sqtail', v);
+  const btn = document.getElementById('aSqTailBtn');
+  if (btn) btn.classList.toggle('active', !!v);
   if (!v) { _gateGain = 1.0; _applyVolume(); }
 }
 
@@ -1598,7 +1602,8 @@ function initControls() {
   });
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + 'k';
   setHP(A.hp);
-  document.getElementById('aSqTail').checked = A.sqtail;
+  const sqBtn = document.getElementById('aSqTailBtn');
+  if (sqBtn) sqBtn.classList.toggle('active', !!A.sqtail);
   if (_isAndroidBrowser && 'wakeLock' in navigator)
     document.getElementById('aWakeLockRow').style.display = '';
 }
@@ -1622,16 +1627,17 @@ async function _acquireWakeLock() {
       if (_wakeLockWanted && S.audioOn && document.visibilityState === 'visible')
         setTimeout(_acquireWakeLock, 1000);
     });
-    const cb = document.getElementById('aWakeLock');
-    if (cb) cb.checked = true;
+    const btn = document.getElementById('aWakeLockBtn');
+    if (btn) btn.classList.add('active');
   } catch (_) {}
 }
 function _releaseWakeLock() {
   _wakeLockWanted = false;   // user explicitly turned it off — don't re-acquire
   if (_wakeLock) { _wakeLock.release(); _wakeLock = null; }
-  const cb = document.getElementById('aWakeLock');
-  if (cb) cb.checked = false;
+  const btn = document.getElementById('aWakeLockBtn');
+  if (btn) btn.classList.remove('active');
 }
+function toggleWakeLock() { setWakeLock(!_wakeLockWanted); }
 function setWakeLock(on) {
   if (on) _acquireWakeLock(); else _releaseWakeLock();
 }
