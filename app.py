@@ -118,7 +118,7 @@ PAGE = r"""<!DOCTYPE html>
 :root{
   --bg:#090b0e;--card:#0d1117;--card2:#141b22;--border:#21262d;
   --panel:#05080d;--panel-b:#0d1520;
-  --text:#c9d1d9;--muted:#8aa0b0;--dim:#1e2d3a;
+  --text:#d4dde6;--muted:#a8bece;--dim:#1e2d3a;
   --green:#2dff6e;--gdim:rgba(45,255,110,.07);--gborder:rgba(45,255,110,.28);
   --amber:#ffaa00;--cyan:#00d4ff;--blue:#4d8aff;--red:#ff4455;--purple:#9966dd;--yellow:#ffcc00;
   --mono:'SF Mono','Fira Code','Consolas',monospace;
@@ -176,7 +176,7 @@ main{padding:20px}
 .ac-seg-group{padding:6px 0 2px}
 .ac-seg-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65;margin-bottom:5px}
 .ac-seg{display:flex;flex-direction:column;gap:2px}
-.ac-seg-btn{flex:1;background:#080c16;border:1px solid #1a2035;color:var(--dim);border-radius:2px;padding:5px 6px;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:var(--mono);transition:all .15s;line-height:1}
+.ac-seg-btn{flex:1;background:#080c16;border:1px solid #1a2035;color:var(--muted);border-radius:2px;padding:5px 6px;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:var(--mono);transition:all .15s;line-height:1}
 .ac-seg-btn:hover{border-color:#2a3a4a;color:var(--text)}
 .ac-seg-btn.active{background:rgba(45,255,110,.07);border-color:rgba(45,255,110,.4);color:var(--green)}
 .ac-tog-row{display:flex;align-items:center;gap:7px;padding:6px 0;cursor:pointer;user-select:none}
@@ -220,20 +220,20 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .sc-lbl{
   font-family:var(--mono);font-size:26px;font-weight:600;
   letter-spacing:.04em;line-height:1;
-  color:var(--dim);text-transform:uppercase;
+  color:var(--muted);text-transform:uppercase;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   transition:color .4s,text-shadow .4s;
 }
 .sc-display.active .sc-lbl{color:var(--green);text-shadow:var(--glow)}
-.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:6px}
+.sc-meta{display:flex;align-items:baseline;gap:10px;margin-top:6px;min-height:18px}
 .sc-freq{
   font-family:var(--mono);font-size:13px;font-weight:500;
-  letter-spacing:.06em;color:var(--dim);
+  letter-spacing:.06em;color:var(--muted);
   transition:color .3s,text-shadow .3s;flex:1;
 }
 .sc-display.active .sc-freq{color:var(--amber);text-shadow:var(--amber-glow)}
 .sc-unit{font-size:11px;color:var(--muted);margin-left:3px}
-.sc-timer{font-family:var(--mono);font-size:11px;color:var(--dim);transition:color .3s;flex-shrink:0}
+.sc-timer{font-family:var(--mono);font-size:11px;color:var(--muted);transition:color .3s;flex-shrink:0}
 .sc-display.active .sc-timer{color:var(--cyan);opacity:.8}
 .sc-pl{font-family:var(--mono);font-size:10px;color:var(--purple);letter-spacing:.08em;flex-shrink:0;opacity:.85}
 .sc-ctcss{font-family:var(--mono);font-size:10px;letter-spacing:.08em;flex-shrink:0;transition:color .3s}
@@ -298,15 +298,15 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .ch.active:hover{background:rgba(45,255,110,.1)}
 .ch.held{background:rgba(255,176,0,.06);border-left:2px solid var(--amber);padding-left:10px}
 .ch.held:hover{background:rgba(255,176,0,.12)}
-.ch-dot{font-size:9px;color:var(--dim);width:10px;flex-shrink:0;transition:color .2s}
+.ch-dot{font-size:9px;color:var(--muted);width:10px;flex-shrink:0;transition:color .2s}
 .ch.active .ch-dot{color:var(--green);text-shadow:var(--glow-sm)}
 .ch-f{font-family:var(--mono);font-size:12px;font-weight:600;width:74px;flex-shrink:0;color:#3a5a6a;transition:color .2s}
 .ch.active .ch-f{color:var(--amber);text-shadow:var(--amber-glow)}
 .ch-l{color:var(--muted);font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:.02em}
 .ch.active .ch-l{color:var(--text)}
-.ch-t{font-size:10px;color:var(--dim);font-family:var(--mono);flex-shrink:0;transition:color .2s}
+.ch-t{font-size:10px;color:var(--muted);font-family:var(--mono);flex-shrink:0;transition:color .2s}
 .ch.active .ch-t{color:var(--cyan);opacity:.7}
-.noch{padding:12px;color:var(--dim);font-size:10px;text-align:center;letter-spacing:.15em;text-transform:uppercase}
+.noch{padding:12px;color:var(--muted);font-size:10px;text-align:center;letter-spacing:.15em;text-transform:uppercase}
 .ch-acts{display:flex;gap:2px;margin-left:auto;flex-shrink:0;visibility:hidden}
 .ch:hover .ch-acts,.ch.skipped .ch-acts{visibility:visible}
 .ch-icon{background:none;border:none;cursor:pointer;padding:1px 5px;font-size:10px;color:var(--muted);border-radius:2px;line-height:1}
