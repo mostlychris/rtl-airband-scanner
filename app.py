@@ -167,7 +167,7 @@ main{padding:20px}
 .acontrols.hidden{display:none}
 #ac-body{display:flex;flex-direction:row;align-items:center;flex-wrap:wrap;gap:4px 18px;padding:4px 14px;flex:1}
 #ac-acts{display:flex;align-items:center;gap:3px;margin-left:auto;padding-left:14px;border-left:1px solid var(--panel-b)}
-#ac-acts .sc-btn{padding:4px 7px;font-size:7px;letter-spacing:.08em}
+#ac-acts .sc-btn{padding:4px 7px;font-size:7px;letter-spacing:.08em;white-space:nowrap}
 #ac-acts .sc-acts{display:flex;gap:3px;padding:0;background:none;border:none}
 .ac-knob-wrap{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0 2px}
 .ac-knob-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65}
@@ -176,7 +176,7 @@ main{padding:20px}
 .ac-seg-group{padding:6px 0 2px}
 .ac-seg-lbl{font-size:7px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:var(--cyan);opacity:.65;margin-bottom:5px}
 .ac-seg{display:flex;gap:2px}
-.ac-seg-btn{flex:1;background:#080c16;border:1px solid #1a2035;color:var(--dim);border-radius:2px;padding:4px 0;font-size:8px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:var(--mono);transition:all .15s;line-height:1}
+.ac-seg-btn{flex:1;background:#080c16;border:1px solid #1a2035;color:var(--dim);border-radius:2px;padding:5px 6px;font-size:9px;font-weight:700;letter-spacing:.06em;cursor:pointer;font-family:var(--mono);transition:all .15s;line-height:1}
 .ac-seg-btn:hover{border-color:#2a3a4a;color:var(--text)}
 .ac-seg-btn.active{background:rgba(45,255,110,.07);border-color:rgba(45,255,110,.4);color:var(--green)}
 .ac-tog-row{display:flex;align-items:center;gap:7px;padding:6px 0;cursor:pointer;user-select:none}
