@@ -2446,7 +2446,7 @@ class RTLFMScanner:
                 deemph_z        = 0.0
                 hp_pl_b = hp_pl_a = hp_pl_zi = None  # computed once per hop if ch_hp_filter > 0
                 if ch_hp_filter > 0:
-                    hp_pl_b, hp_pl_a = butter(2, min(ch_hp_filter, _hp_pl_nyq - 1) / _hp_pl_nyq, btype='high')
+                    hp_pl_b, hp_pl_a = butter(4, min(ch_hp_filter, _hp_pl_nyq - 1) / _hp_pl_nyq, btype='high')
                     hp_pl_zi = lfilter_zi(hp_pl_b, hp_pl_a) * 0.0
                 _last_dbg_state = None
                 ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
@@ -2561,7 +2561,6 @@ class RTLFMScanner:
                         audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
                         if hp_pl_b is not None:
                             audio_hp, hp_pl_zi = lfilter(hp_pl_b, hp_pl_a, audio, zi=hp_pl_zi)
-                            audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
                             audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
 
                         # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
