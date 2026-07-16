@@ -1280,16 +1280,16 @@ function _segHtml(litCount) {
   return h;
 }
 function _updateMeter(mount, db, thrDb, active) {
-  const segs = document.getElementById('sqsegs_' + eid(mount));
-  const lv   = document.getElementById('sqlevel_' + eid(mount));
-  if (segs) {
-    const pct     = active ? Math.min(1, Math.max(0, (db - thrDb) / (-thrDb))) : 0;
+  const meter = document.getElementById('sqsegs_' + eid(mount));
+  const lv    = document.getElementById('sqlevel_' + eid(mount));
+  const wrap  = meter && meter.closest('.sc-meter');
+  if (wrap) wrap.style.visibility = active ? '' : 'hidden';
+  if (meter && active) {
+    const pct      = Math.min(1, Math.max(0, (db - thrDb) / (-thrDb)));
     const litCount = Math.round(pct * _SEG_TOTAL);
-    segs.innerHTML = _segHtml(litCount);
+    meter.innerHTML = _segHtml(litCount);
   }
-  if (lv) {
-    lv.textContent = active ? db.toFixed(1) + ' dB' : '';
-  }
+  if (lv) lv.textContent = active ? db.toFixed(1) + ' dB' : '';
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────────
@@ -1472,7 +1472,7 @@ function cardHtml(s) {
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
     + '<div class="sc-lbl-row">'
     + '<div class="sc-lbl">' + escHtml(primary) + '</div>'
-    + '<div class="sc-meter"><div class="sc-segs" id="sqsegs_' + eid(s.mount) + '">' + _segHtml(0) + '</div><span class="sc-db" id="sqlevel_' + eid(s.mount) + '"></span></div>'
+    + '<div class="sc-meter" style="' + (isRx ? '' : 'visibility:hidden') + '"><div class="sc-segs" id="sqsegs_' + eid(s.mount) + '">' + _segHtml(0) + '</div><span class="sc-db" id="sqlevel_' + eid(s.mount) + '"></span></div>'
     + '</div>'
     + metaHtml
     + '</div>'
