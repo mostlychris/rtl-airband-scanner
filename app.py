@@ -326,6 +326,55 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .ch-add-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:10px;color:var(--muted);cursor:pointer;border-top:1px solid #141e30;transition:color .15s;letter-spacing:.1em;text-transform:uppercase}
 .ch-add-btn:hover{color:var(--cyan)}
 .ch-bank-badge{font-size:8px;color:#5a8aaa;background:#0a1824;border:1px solid #1a3040;border-radius:2px;padding:1px 5px;flex-shrink:0;letter-spacing:.05em}
+.ch-mode-badge{font-size:8px;color:#aa7a5a;background:#181008;border:1px solid #302010;border-radius:2px;padding:1px 5px;flex-shrink:0;letter-spacing:.05em;text-transform:uppercase}
+
+/* ── Channel edit modal ─────────────────────────────────────── */
+.modal-backdrop{
+  position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:200;
+  display:flex;align-items:center;justify-content:center;
+  opacity:0;pointer-events:none;transition:opacity .15s;
+}
+.modal-backdrop.open{opacity:1;pointer-events:auto}
+.modal{
+  background:#0d1828;border:1px solid #1e3050;border-radius:6px;
+  width:min(480px,96vw);max-height:90vh;overflow-y:auto;
+  box-shadow:0 8px 40px rgba(0,0,0,.8);
+  transform:translateY(8px);transition:transform .15s;
+}
+.modal-backdrop.open .modal{transform:translateY(0)}
+.modal-hdr{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:14px 18px;border-bottom:1px solid #162030;
+  font-size:12px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:var(--cyan);
+}
+.modal-close{background:none;border:1px solid #1e2a3e;border-radius:3px;color:var(--muted);
+  cursor:pointer;font-size:13px;padding:1px 7px;line-height:1.4}
+.modal-close:hover{color:var(--text);border-color:#2a4a6e}
+.modal-body{padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
+.modal-field{display:flex;flex-direction:column;gap:4px}
+.modal-field.full{grid-column:1/-1}
+.modal-lbl{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:#5a8aaa}
+.modal-in{
+  background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;
+  padding:6px 9px;font-size:11px;font-family:var(--mono);width:100%;box-sizing:border-box;
+}
+.modal-in:focus{outline:none;border-color:#2a6090}
+select.modal-in{cursor:pointer}
+.modal-foot{
+  display:flex;gap:8px;justify-content:flex-end;
+  padding:12px 18px;border-top:1px solid #162030;
+}
+.modal-save{
+  background:rgba(45,255,110,.08);border:1px solid rgba(45,255,110,.35);
+  border-radius:3px;color:var(--green);cursor:pointer;
+  font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:6px 18px;
+}
+.modal-save:hover{background:rgba(45,255,110,.15)}
+.modal-cancel{
+  background:none;border:1px solid #1e2a3e;border-radius:3px;color:var(--muted);
+  cursor:pointer;font-size:10px;letter-spacing:.08em;padding:6px 12px;
+}
+.modal-cancel:hover{border-color:#2a4a6e;color:var(--text)}
 
 /* ── Banks panel ───────────────────────────────────────────── */
 .banks-panel{background:#060d18;border-bottom:1px solid #0d1520}
@@ -458,6 +507,62 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   <div id="ac-acts-wrap"><div id="ac-acts"></div></div>
   </div>
 </div>
+</div>
+<!-- Channel edit/add modal -->
+<div class="modal-backdrop" id="chModal" onclick="if(event.target===this)closeChModal()">
+  <div class="modal">
+    <div class="modal-hdr"><span id="chModalTitle">Edit Channel</span><button class="modal-close" onclick="closeChModal()">✕</button></div>
+    <div class="modal-body">
+      <div class="modal-field" id="chModalFreqField">
+        <label class="modal-lbl">Frequency (MHz)</label>
+        <input class="modal-in" id="chModalFreq" type="number" step="0.0001" placeholder="e.g. 446.000">
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">Label</label>
+        <input class="modal-in" id="chModalLabel" placeholder="Channel name">
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">Bank</label>
+        <input class="modal-in" id="chModalBank" placeholder="e.g. Police, Fire (optional)">
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">Mode</label>
+        <select class="modal-in" id="chModalMode">
+          <option value="">FM (default)</option>
+          <option value="fm">FM — Land Mobile (±5 kHz)</option>
+          <option value="nfm">NFM — Narrow FM (±2.5 kHz)</option>
+          <option value="am">AM — Amplitude Modulation</option>
+        </select>
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">Channel Width (kHz)</label>
+        <select class="modal-in" id="chModalBW">
+          <option value="">Auto</option>
+          <option value="6.25">6.25 kHz (Narrowband)</option>
+          <option value="8.33">8.33 kHz (Aviation)</option>
+          <option value="12.5">12.5 kHz (NFM)</option>
+          <option value="25">25 kHz (FM Land Mobile)</option>
+          <option value="30">30 kHz (FM)</option>
+        </select>
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">CTCSS / PL Tone (Hz)</label>
+        <input class="modal-in" id="chModalPL" type="number" step="0.1" min="0" placeholder="e.g. 100.0 (blank = off)">
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">Squelch RMS</label>
+        <input class="modal-in" id="chModalSQ" type="number" step="0.001" min="0.001" max="0.5" placeholder="e.g. 0.050">
+      </div>
+      <div class="modal-field">
+        <label class="modal-lbl">RF Gain</label>
+        <input class="modal-in" id="chModalGain" placeholder="auto or dB (e.g. 25.4)">
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="modal-cancel" onclick="closeChModal()">Cancel</button>
+      <button class="modal-save" onclick="saveChModal()">Save Channel</button>
+    </div>
+  </div>
 </div>
 <script>
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -972,8 +1077,10 @@ function onMsg(m) {
       s.channelSquelch = s.channelSquelch || {};
       s.channelGain    = s.channelGain    || {};
       s.channelPL      = s.channelPL      || {};
-      s.channelBank    = s.channelBank    || {};
-      s.banks          = s.banks          || {};
+      s.channelBank       = s.channelBank       || {};
+      s.channelModulation = s.channelModulation || {};
+      s.channelBandwidth  = s.channelBandwidth  || {};
+      s.banks             = s.banks             || {};
       s.skipped        = s.skipped        || [];
       s.holdFreq       = s.holdFreq       || null;
       s.squelchHoldMs  = (s.squelchHold || 2.0) * 1000;
@@ -1143,12 +1250,13 @@ function onMsg(m) {
     s.channelSquelch = m.channelSquelch;
     s.channelGain    = m.channelGain    || {};
     s.channelPL      = m.channelPL      || {};
-    s.channelBank    = m.channelBank    || {};
-    s.banks          = m.banks          || {};
+    s.channelBank       = m.channelBank       || {};
+    s.channelModulation = m.channelModulation || {};
+    s.channelBandwidth  = m.channelBandwidth  || {};
+    s.banks             = m.banks             || {};
     s.defaultSquelch = m.defaultSquelch;
     s.defaultGain    = m.defaultGain;
     s.skipped        = m.skipped || [];
-    _editFreq = null; _addingCh = false;
     updateCard(m.mount);
   } else if (m.type === 'hold_update') {
     const s = S.streams[m.mount]; if (!s) return;
@@ -1231,10 +1339,12 @@ function cardClass(s) {
 function cardHtml(s) {
   const chs    = s.channels || {};
   const csq    = s.channelSquelch || {};
-  const cgain  = s.channelGain    || {};
-  const cpl    = s.channelPL      || {};
-  const cbank  = s.channelBank    || {};
-  const banks  = s.banks          || {};
+  const cgain  = s.channelGain        || {};
+  const cpl    = s.channelPL          || {};
+  const cbank  = s.channelBank        || {};
+  const cmod   = s.channelModulation  || {};
+  const cbw    = s.channelBandwidth   || {};
+  const banks  = s.banks              || {};
   const skpSet = new Set(s.skipped || []);
   const defSq  = (s.defaultSquelch || 0.05).toFixed(3);
   const defGn  = s.defaultGain || 'auto';
@@ -1271,35 +1381,24 @@ function cardHtml(s) {
       const gn   = f in cgain ? cgain[f] : defGn;
       const pl   = f in cpl  ? cpl[f]   : 0;
       const bk   = cbank[f] || '';
+      const md   = cmod[f]  || '';
       const t    = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
-      if (f === _editFreq) {
-        rows += '<div class="ch-edit-row" onclick="event.stopPropagation()">'
-          + '<span class="ch-f" style="font-size:10px;color:var(--muted);flex-shrink:0">' + f + '</span>'
-          + '<input class="ch-edit-in ch-edit-lbl" id="ch-edit-label" value="' + escHtml(lbl !== f ? lbl : '') + '" placeholder="Label">'
-          + '<input class="ch-edit-in ch-edit-sq" id="ch-edit-sq" type="number" value="' + sq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
-          + '<input class="ch-edit-in ch-edit-gn" id="ch-edit-gain" value="' + escHtml(gn) + '" placeholder="Gain (auto or dB)" title="RF gain: auto, or tenths-of-dB (e.g. 25.4)">'
-          + '<input class="ch-edit-in ch-edit-pl" id="ch-edit-pl" type="number" value="' + (pl || '') + '" step="0.1" min="0" placeholder="PL Hz (0=off)" title="CTCSS tone Hz, 0 or blank to disable">'
-          + '<input class="ch-edit-in" id="ch-edit-bank" value="' + escHtml(bk) + '" placeholder="Bank (optional)" title="Scan bank name" style="width:90px">'
-          + '<button class="ch-save" onclick="saveChannel(\'' + f + '\')">SAVE</button>'
-          + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
-          + '</div>';
-      } else {
-        const isHeld = f === heldF;
-        rows += '<div class="ch' + (act?' active':'') + (isHeld&&!act?' held':'') + (skp?' skipped':'') + '" onclick="event.stopPropagation();holdChannel(\'' + f + '\')" title="' + (isHeld?'Release hold':'Tune to ' + f + ' MHz') + '">'
-          + '<span class="ch-dot">' + (skp ? '─' : act ? '◉' : '○') + '</span>'
-          + '<span class="ch-f">' + f + '</span>'
-          + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
-          + (bk ? '<span class="ch-bank-badge">' + escHtml(bk) + '</span>' : '')
-          + (pl ? '<span class="ch-pl">PL ' + pl + '</span>' : '')
-          + '<span class="ch-sq">SQ ' + sq + '</span>'
-          + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
-          + '<span class="ch-t">' + t + '</span>'
-          + '<div class="ch-acts">'
-          + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
-          + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')" title="Edit">✏</button>'
-          + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')" title="Remove">✕</button>'
-          + '</div></div>';
-      }
+      const isHeld = f === heldF;
+      rows += '<div class="ch' + (act?' active':'') + (isHeld&&!act?' held':'') + (skp?' skipped':'') + '" onclick="event.stopPropagation();holdChannel(\'' + f + '\')" title="' + (isHeld?'Release hold':'Tune to ' + f + ' MHz') + '">'
+        + '<span class="ch-dot">' + (skp ? '─' : act ? '◉' : '○') + '</span>'
+        + '<span class="ch-f">' + f + '</span>'
+        + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
+        + (bk ? '<span class="ch-bank-badge">' + escHtml(bk) + '</span>' : '')
+        + (md ? '<span class="ch-mode-badge">' + escHtml(md.toUpperCase()) + '</span>' : '')
+        + (pl ? '<span class="ch-pl">PL ' + pl + '</span>' : '')
+        + '<span class="ch-sq">SQ ' + sq + '</span>'
+        + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
+        + '<span class="ch-t">' + t + '</span>'
+        + '<div class="ch-acts">'
+        + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
+        + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')" title="Edit">✏</button>'
+        + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')" title="Remove">✕</button>'
+        + '</div></div>';
     });
   } else if (af) {
     rows = '<div class="ch active">'
@@ -1312,21 +1411,7 @@ function cardHtml(s) {
     rows = '<div class="noch">Scanning…</div>';
   }
 
-  let addArea = '';
-  if (_addingCh) {
-    addArea = '<div class="ch-edit-row" onclick="event.stopPropagation()">'
-      + '<input class="ch-edit-in" id="ch-add-freq" placeholder="MHz" style="width:60px">'
-      + '<input class="ch-edit-in ch-edit-lbl" id="ch-add-label" placeholder="Label">'
-      + '<input class="ch-edit-in ch-edit-sq" id="ch-add-sq" type="number" value="' + defSq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
-      + '<input class="ch-edit-in ch-edit-gn" id="ch-add-gain" value="' + escHtml(defGn) + '" placeholder="Gain" title="RF gain: auto or dB">'
-      + '<input class="ch-edit-in ch-edit-pl" id="ch-add-pl" type="number" step="0.1" min="0" placeholder="PL Hz (0=off)" title="CTCSS tone Hz, 0 or blank to disable">'
-      + '<input class="ch-edit-in" id="ch-add-bank" placeholder="Bank (optional)" style="width:90px">'
-      + '<button class="ch-save" onclick="addChannel()">ADD</button>'
-      + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
-      + '</div>';
-  } else {
-    addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add Frequency</div>';
-  }
+  const addArea = '<div class="ch-add-btn" onclick="event.stopPropagation();showAddChannel()">＋ Add Frequency</div>';
 
   // Show freq below label when active (rawLbl case), or when holding silently (holdLbl case)
   const metaFreq    = (af && rawLbl) ? af : (!af && heldF && holdLbl) ? heldF : null;
@@ -1471,27 +1556,86 @@ function toggleActLog() {
 }
 
 // ── Channel management ─────────────────────────────────────────────────────────
-function editChannel(freq) {
-  _editFreq = freq; _addingCh = false;
-  Object.keys(S.streams).forEach(m => updateCard(m));
+let _chModalFreq = null;  // null = add mode, string = edit mode
+
+function openChModal(freq) {
+  // edit mode
+  const mount = Object.keys(S.streams)[0];
+  const s = mount ? S.streams[mount] : null;
+  const chs   = s ? (s.channels || {}) : {};
+  const csq   = s ? (s.channelSquelch || {}) : {};
+  const cgain = s ? (s.channelGain || {}) : {};
+  const cpl   = s ? (s.channelPL || {}) : {};
+  const cbank = s ? (s.channelBank || {}) : {};
+  const cmod  = s ? (s.channelModulation || {}) : {};
+  const cbw   = s ? (s.channelBandwidth || {}) : {};
+  const defSq = s ? (s.defaultSquelch || 0.05) : 0.05;
+  const defGn = s ? (s.defaultGain || 'auto') : 'auto';
+
+  _chModalFreq = freq;
+  document.getElementById('chModalTitle').textContent = 'Edit Channel';
+  document.getElementById('chModalFreqField').style.display = 'none';
+  document.getElementById('chModalFreq').value = freq;
+  document.getElementById('chModalLabel').value = (chs[freq] && chs[freq] !== freq ? chs[freq] : '');
+  document.getElementById('chModalBank').value  = cbank[freq] || '';
+  document.getElementById('chModalMode').value  = cmod[freq]  || '';
+  document.getElementById('chModalBW').value    = cbw[freq]   || '';
+  document.getElementById('chModalPL').value    = cpl[freq]   || '';
+  document.getElementById('chModalSQ').value    = freq in csq ? csq[freq].toFixed(3) : defSq.toFixed(3);
+  document.getElementById('chModalGain').value  = cgain[freq] || defGn;
+  document.getElementById('chModal').classList.add('open');
+  setTimeout(() => document.getElementById('chModalLabel').focus(), 50);
 }
-function cancelEdit() {
-  _editFreq = null; _addingCh = false;
-  Object.keys(S.streams).forEach(m => updateCard(m));
+
+function showAddChannel() {
+  _chModalFreq = null;
+  document.getElementById('chModalTitle').textContent = 'Add Channel';
+  document.getElementById('chModalFreqField').style.display = '';
+  document.getElementById('chModalFreq').value  = '';
+  document.getElementById('chModalLabel').value = '';
+  document.getElementById('chModalBank').value  = '';
+  document.getElementById('chModalMode').value  = '';
+  document.getElementById('chModalBW').value    = '';
+  document.getElementById('chModalPL').value    = '';
+  const mount = Object.keys(S.streams)[0];
+  const s = mount ? S.streams[mount] : null;
+  document.getElementById('chModalSQ').value  = s ? (s.defaultSquelch || 0.05).toFixed(3) : '0.050';
+  document.getElementById('chModalGain').value = s ? (s.defaultGain || 'auto') : 'auto';
+  document.getElementById('chModal').classList.add('open');
+  setTimeout(() => document.getElementById('chModalFreq').focus(), 50);
 }
-function saveChannel(freq) {
-  const label = (document.getElementById('ch-edit-label').value || '').trim();
-  const sq    = parseFloat(document.getElementById('ch-edit-sq').value);
-  const plEl  = document.getElementById('ch-edit-pl');
-  const pl    = plEl ? parseFloat(plEl.value) : NaN;
-  const gn    = (document.getElementById('ch-edit-gain').value || '').trim();
-  const bk    = (document.getElementById('ch-edit-bank') ? document.getElementById('ch-edit-bank').value : '').trim();
+
+function closeChModal() {
+  document.getElementById('chModal').classList.remove('open');
+  _chModalFreq = null;
+}
+
+function saveChModal() {
+  const freq  = _chModalFreq || (document.getElementById('chModalFreq').value || '').trim();
+  const label = (document.getElementById('chModalLabel').value || '').trim();
+  const sq    = parseFloat(document.getElementById('chModalSQ').value);
+  const pl    = parseFloat(document.getElementById('chModalPL').value);
+  const gn    = (document.getElementById('chModalGain').value || '').trim();
+  const bk    = (document.getElementById('chModalBank').value || '').trim();
+  const md    = (document.getElementById('chModalMode').value || '').trim();
+  const bw    = parseFloat(document.getElementById('chModalBW').value) || 0;
+  if (!freq) return;
   fetch('/api/channel', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn, pl: isNaN(pl) ? 0 : pl, bank: bk }),
-  }).catch(e => console.error('[api]', e));
+    body: JSON.stringify({
+      freq, label: label || freq,
+      squelch_rms: isNaN(sq) ? null : sq,
+      gain: gn, pl: isNaN(pl) ? 0 : pl,
+      bank: bk, modulation: md,
+      bandwidth: bw || null,
+    }),
+  }).then(() => closeChModal()).catch(e => console.error('[api]', e));
 }
+
+function editChannel(freq) { openChModal(freq); }
+function cancelEdit() { closeChModal(); }
+
 function deleteChannel(freq) {
   if (!confirm('Remove ' + freq + ' MHz from scanner?')) return;
   fetch('/api/channel/' + encodeURIComponent(freq), { method: 'DELETE' })
@@ -1512,25 +1656,6 @@ function holdChannel(freq) {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ freq }),
-  }).catch(e => console.error('[api]', e));
-}
-function showAddChannel() {
-  _editFreq = null; _addingCh = true;
-  Object.keys(S.streams).forEach(m => updateCard(m));
-  setTimeout(() => { const el = document.getElementById('ch-add-freq'); if (el) el.focus(); }, 50);
-}
-function addChannel() {
-  const freq  = (document.getElementById('ch-add-freq').value  || '').trim();
-  const label = (document.getElementById('ch-add-label').value || '').trim();
-  const sq    = parseFloat(document.getElementById('ch-add-sq').value);
-  const gn    = (document.getElementById('ch-add-gain').value  || '').trim();
-  const pl    = parseFloat(document.getElementById('ch-add-pl').value);
-  const bk    = (document.getElementById('ch-add-bank') ? document.getElementById('ch-add-bank').value : '').trim();
-  if (!freq) return;
-  fetch('/api/channel', {
-    method: 'PUT',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn, pl: isNaN(pl) ? 0 : pl, bank: bk }),
   }).catch(e => console.error('[api]', e));
 }
 function toggleBank(mount, bank, enabled) {
@@ -1908,6 +2033,8 @@ class RTLFMScanner:
                  channel_gain: dict[str, str] | None = None,
                  channel_pl: dict[str, float] | None = None,
                  channel_bank: dict[str, str] | None = None,
+                 channel_modulation: dict[str, str] | None = None,
+                 channel_bandwidth: dict[str, float] | None = None,
                  banks_enabled: dict[str, bool] | None = None,
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
@@ -1923,9 +2050,11 @@ class RTLFMScanner:
         self.squelch_hold    = squelch_hold   # seconds before clearing inactive freq
         self.channel_squelch = channel_squelch or {}  # per-freq squelch overrides
         self.channel_gain    = channel_gain    or {}  # per-freq gain overrides (e.g. "25.4" or "auto")
-        self.channel_pl      = channel_pl      or {}  # per-freq CTCSS tone (Hz); 0.0 or absent = disabled
-        self.channel_bank    = channel_bank    or {}  # per-freq bank name ('' = Default)
-        self.banks_enabled   = banks_enabled   or {}  # bank name → enabled (absent = True)
+        self.channel_pl         = channel_pl         or {}  # per-freq CTCSS tone (Hz); 0.0 or absent = disabled
+        self.channel_bank       = channel_bank       or {}  # per-freq bank name ('' = Default)
+        self.channel_modulation = channel_modulation or {}  # per-freq mode: 'fm','nfm','am' (absent = global modulation)
+        self.channel_bandwidth  = channel_bandwidth  or {}  # per-freq channel bandwidth in kHz (absent = auto)
+        self.banks_enabled      = banks_enabled      or {}  # bank name → enabled (absent = True)
         self.skipped         = skipped or set()       # freqs excluded from scan rotation
         self.debug           = debug
         self.ppm          = ppm
@@ -1977,7 +2106,9 @@ class RTLFMScanner:
                     squelch_rms: float | None = None,
                     gain: str | None = None,
                     pl: float | None = None,
-                    bank: str | None = None) -> None:
+                    bank: str | None = None,
+                    modulation: str | None = None,
+                    bandwidth: float | None = None) -> None:
         with self._lock:
             self.channels[freq] = label
             if squelch_rms is not None:
@@ -1995,6 +2126,17 @@ class RTLFMScanner:
                     self.channel_pl.pop(freq, None)
             if bank is not None:
                 self.channel_bank[freq] = bank.strip()
+            if modulation is not None:
+                m = modulation.strip().lower()
+                if m:
+                    self.channel_modulation[freq] = m
+                else:
+                    self.channel_modulation.pop(freq, None)
+            if bandwidth is not None:
+                if bandwidth > 0:
+                    self.channel_bandwidth[freq] = bandwidth
+                else:
+                    self.channel_bandwidth.pop(freq, None)
 
     def remove_channel(self, freq: str) -> None:
         with self._lock:
@@ -2003,6 +2145,8 @@ class RTLFMScanner:
             self.channel_gain.pop(freq, None)
             self.channel_pl.pop(freq, None)
             self.channel_bank.pop(freq, None)
+            self.channel_modulation.pop(freq, None)
+            self.channel_bandwidth.pop(freq, None)
             self.skipped.discard(freq)
             if self._active_freq == freq:
                 self._active_freq  = None
@@ -2242,10 +2386,12 @@ class RTLFMScanner:
                     if hf and hf in freq_keys:
                         freq_str = hf
                         scan_idx = freq_keys.index(hf)
-                    label     = self.channels.get(freq_str, freq_str)
-                    threshold = self.channel_squelch.get(freq_str, self.squelch_rms)
-                    eff_gain  = self.channel_gain.get(freq_str, self.gain)
-                    pl_tone   = self.channel_pl.get(freq_str, 0.0)
+                    label       = self.channels.get(freq_str, freq_str)
+                    threshold   = self.channel_squelch.get(freq_str, self.squelch_rms)
+                    eff_gain    = self.channel_gain.get(freq_str, self.gain)
+                    pl_tone     = self.channel_pl.get(freq_str, 0.0)
+                    ch_mode     = self.channel_modulation.get(freq_str, self.modulation).lower()
+                    ch_bw_khz   = self.channel_bandwidth.get(freq_str, 0.0)  # 0 = auto
                 freq_hz   = int(float(freq_str) * 1_000_000)
 
                 if self.debug:
@@ -2324,33 +2470,54 @@ class RTLFMScanner:
                              + 1j * filt_q[:n_out * decimate:decimate]).astype(np.complex64)
                     iq_if -= iq_if.mean()   # remove RTL-SDR LO leakage (DC offset at 0 Hz)
 
-                    # Stage 2 — FM discriminator at audio_rate.
-                    # With rtlsdr_read_async the hardware streams continuously with zero
-                    # inter-callback gaps, so last_iq (the final decimated sample of the
-                    # previous chunk) connects directly to iq_if[0] in time.  Prepending
-                    # it restores cross-chunk phase continuity without aliasing.
-                    if last_iq is not None:
-                        iq_ext = np.concatenate(([last_iq], iq_if))
+                    # Stage 2 — demodulation at audio_rate.
+                    if ch_mode == 'am':
+                        # AM envelope detection: magnitude minus smoothed DC.
+                        env = np.abs(iq_if).astype(np.float32)
+                        env -= env.mean()
+                        # Normalise to ±1 (typical AM envelope is 0–1 normalised IQ).
+                        peak = float(np.max(np.abs(env))) or 1.0
+                        audio = np.clip(env / peak, -1.0, 1.0)
+                        # Squelch via envelope RMS (no phase-variance for AM).
+                        rms_am = float(np.sqrt(np.mean(env ** 2)))
+                        noise_ratio  = max(0.0, 1.0 - rms_am * 20.0)
+                        signal_level = 1.0 - noise_ratio
+                        rms          = signal_level
+                        demod        = env  # for CTCSS buffer (won't be used but keeps code path same)
+                        # No de-emphasis for AM.
+                        deemph_z = 0.0
                     else:
-                        iq_ext = iq_if
+                        # FM / NFM — FM discriminator (phase-difference method).
+                        # NFM uses a tighter deviation scale (±2.5 kHz vs ±5 kHz for FM).
+                        if ch_mode == 'nfm':
+                            ch_fm_scale = self.audio_rate / (2.0 * np.pi * 2500.0)
+                        else:
+                            ch_fm_scale = fm_scale  # standard FM: ±5 kHz deviation
+
+                        # Prepend last IQ sample to maintain phase continuity across chunks.
+                        if last_iq is not None:
+                            iq_ext = np.concatenate(([last_iq], iq_if))
+                        else:
+                            iq_ext = iq_if
+                        demod = np.angle(iq_ext[1:] * np.conj(iq_ext[:-1]))
+
+                        audio = (demod * ch_fm_scale).astype(np.float32)
+                        np.clip(audio, -1.0, 1.0, out=audio)
+                        # De-emphasis: 1-pole IIR (y[n] = β·x[n] + α·y[n-1]).
+                        audio_f64, zf = lfilter(
+                            [_deemph_beta], [1.0, -_deemph_alpha],
+                            audio.astype(np.float64), zi=np.array([deemph_z])
+                        )
+                        deemph_z = float(zf[0])
+                        audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
+
+                        # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
+                        # a captured FM carrier drives it near zero.
+                        noise_ratio  = min(float(np.var(demod)) / _NOISE_VAR, 1.0)
+                        signal_level = 1.0 - noise_ratio
+                        rms          = signal_level
+
                     last_iq = iq_if[-1]
-                    demod = np.angle(iq_ext[1:] * np.conj(iq_ext[:-1]))
-
-                    audio = (demod * fm_scale).astype(np.float32)
-                    np.clip(audio, -1.0, 1.0, out=audio)
-                    # De-emphasis: 1-pole IIR (y[n] = β·x[n] + α·y[n-1]).
-                    audio_f64, zf = lfilter(
-                        [_deemph_beta], [1.0, -_deemph_alpha],
-                        audio.astype(np.float64), zi=np.array([deemph_z])
-                    )
-                    deemph_z = float(zf[0])
-                    audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
-
-                    # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
-                    # a captured FM carrier drives it near zero.
-                    noise_ratio  = min(float(np.var(demod)) / _NOISE_VAR, 1.0)
-                    signal_level = 1.0 - noise_ratio
-                    rms    = signal_level
                     db     = 20.0 * np.log10(max(rms, 1e-9))
                     # Hysteresis: squelch opens above threshold, stays open above
                     # 75 % of threshold.  50 % was too loose — a weak carrier sitting
@@ -2594,6 +2761,12 @@ def _save_config() -> None:
                 bk = scanner.channel_bank.get(freq, '')
                 if bk:
                     entry["bank"] = bk
+                md = scanner.channel_modulation.get(freq, '')
+                if md:
+                    entry["modulation"] = md
+                bw = scanner.channel_bandwidth.get(freq, 0.0)
+                if bw:
+                    entry["bandwidth"] = bw
                 new_channels[freq] = entry if len(entry) > 1 else lbl
         cfg["channels"] = new_channels
         with scanner._lock:
@@ -2614,9 +2787,11 @@ def _channels_event() -> dict:
             "channelSquelch": dict(scanner.channel_squelch),
             "channelGain":    dict(scanner.channel_gain),
             "channelPL":      dict(scanner.channel_pl),
-            "channelBank":    dict(scanner.channel_bank),
-            "banks":          scanner._bank_list_locked(),
-            "defaultSquelch": scanner.squelch_rms,
+            "channelBank":        dict(scanner.channel_bank),
+            "channelModulation":  dict(scanner.channel_modulation),
+            "channelBandwidth":   dict(scanner.channel_bandwidth),
+            "banks":              scanner._bank_list_locked(),
+            "defaultSquelch":     scanner.squelch_rms,
             "defaultGain":    scanner.gain,
             "skipped":        sorted(scanner.skipped),
         }
@@ -2694,8 +2869,10 @@ def _state() -> dict:
         channel_squelch = dict(s.channel_squelch)
         channel_gain    = dict(s.channel_gain)
         channel_pl      = dict(s.channel_pl)
-        channel_bank    = dict(s.channel_bank)
-        banks           = s._bank_list_locked()
+        channel_bank       = dict(s.channel_bank)
+        channel_modulation = dict(s.channel_modulation)
+        channel_bandwidth  = dict(s.channel_bandwidth)
+        banks              = s._bank_list_locked()
         skipped         = sorted(s.skipped)
         hold_freq       = s.hold_freq
     return {
@@ -2712,9 +2889,11 @@ def _state() -> dict:
             "channels":       channels,
             "channelSquelch": channel_squelch,
             "channelGain":    channel_gain,
-            "channelPL":      channel_pl,
-            "channelBank":    channel_bank,
-            "banks":          banks,
+            "channelPL":          channel_pl,
+            "channelBank":        channel_bank,
+            "channelModulation":  channel_modulation,
+            "channelBandwidth":   channel_bandwidth,
+            "banks":              banks,
             "defaultSquelch": s.squelch_rms,
             "defaultGain":    s.gain,
             "squelchHold":    s.squelch_hold,
@@ -2913,14 +3092,19 @@ async def api_put_channel(request: Request):
     bank_arg: str | None = body.get("bank", None)
     if bank_arg is not None:
         bank_arg = str(bank_arg).strip()
+    mod_arg: str | None = body.get("modulation", None)
+    if mod_arg is not None:
+        mod_arg = str(mod_arg).strip().lower()
+    bw_raw = body.get("bandwidth")
+    bw_arg: float | None = float(bw_raw) if bw_raw not in (None, '', 0) else None
     if gain_arg is ... and pl_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, bank=bank_arg)
+        scanner.set_channel(freq, label, squelch_rms, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
     elif gain_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, pl=pl_arg, bank=bank_arg)
+        scanner.set_channel(freq, label, squelch_rms, pl=pl_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
     elif pl_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, gain_arg, bank=bank_arg)
+        scanner.set_channel(freq, label, squelch_rms, gain_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
     else:
-        scanner.set_channel(freq, label, squelch_rms, gain_arg, pl_arg, bank=bank_arg)
+        scanner.set_channel(freq, label, squelch_rms, gain_arg, pl_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
     _save_config()
     _emit(_channels_event())
     return {"ok": True, "freq": freq}
@@ -3444,7 +3628,9 @@ def main():
     channel_squelch : dict[str, float] = {}
     channel_gain    : dict[str, str]   = {}
     channel_pl      : dict[str, float] = {}
-    channel_bank    : dict[str, str]   = {}
+    channel_bank        : dict[str, str]   = {}
+    channel_modulation  : dict[str, str]   = {}
+    channel_bandwidth   : dict[str, float] = {}
     for freq, val in raw_channels.items():
         if isinstance(val, dict):
             channels[freq] = val.get("label", freq)
@@ -3456,6 +3642,15 @@ def main():
                 channel_pl[freq] = float(val["pl"])
             if "bank" in val and str(val["bank"]).strip():
                 channel_bank[freq] = str(val["bank"]).strip()
+            if "modulation" in val and str(val["modulation"]).strip():
+                channel_modulation[freq] = str(val["modulation"]).strip().lower()
+            if "bandwidth" in val:
+                try:
+                    bw = float(val["bandwidth"])
+                    if bw > 0:
+                        channel_bandwidth[freq] = bw
+                except (TypeError, ValueError):
+                    pass
         else:
             channels[freq] = str(val)
 
@@ -3470,8 +3665,10 @@ def main():
         channel_squelch = channel_squelch,
         channel_gain    = channel_gain,
         channel_pl      = channel_pl,
-        channel_bank    = channel_bank,
-        banks_enabled   = raw_banks_enabled,
+        channel_bank       = channel_bank,
+        channel_modulation = channel_modulation,
+        channel_bandwidth  = channel_bandwidth,
+        banks_enabled      = raw_banks_enabled,
         skipped         = set(cfg.get("skipped", [])),
         ppm             = cfg.get("ppm", 0),
         modulation      = cfg.get("modulation", "fm"),
