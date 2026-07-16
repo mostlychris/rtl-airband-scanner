@@ -206,6 +206,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .sc-status{display:flex;align-items:center;gap:5px;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex-shrink:0}
 .sc-led{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .sc-status.ok{color:var(--green)}.sc-status.ok .sc-led{background:var(--green);box-shadow:var(--glow-sm)}
+.sc-status.scanning .sc-led,.sc-status.scanning{animation:pulse 1.4s ease-in-out infinite}
 .sc-status.err{color:var(--red)}.sc-status.err .sc-led{background:var(--red);box-shadow:0 0 5px var(--red)}
 .sc-status.warn{color:var(--yellow)}.sc-status.warn .sc-led{background:var(--yellow)}
 .serr{font-size:10px;color:var(--red);padding:5px 12px;background:rgba(255,68,85,.07);border-bottom:1px solid rgba(255,68,85,.15);letter-spacing:.06em}
@@ -1378,13 +1379,10 @@ function cardHtml(s) {
   const isRx    = !!af;
 
   // Panel header: stream name + status LED
-  const rxBadge = (audMount===s.mount && S.audioOn)
-    ? ' <span class="blink" style="color:var(--green);font-size:9px;letter-spacing:.1em">▶ RX</span>' : '';
-  const lockBadge = '';
   const holdBadge = isHeld
     ? ' <span style="font-size:9px;color:var(--amber);letter-spacing:.1em">⏸ HOLD</span>' : '';
   const connStatus = s.connected
-    ? '<span class="sc-status ok"><span class="sc-led"></span>' + (isHeld ? 'HOLD' : 'SCANNING') + '</span>'
+    ? '<span class="sc-status ok' + (!isRx && !isHeld ? ' scanning' : '') + '"><span class="sc-led"></span>' + (isHeld ? 'HOLD' : 'SCANNING') + '</span>'
     : '<span class="sc-status ' + (s.lastError ? 'err' : 'warn') + '"><span class="sc-led"></span>' + (s.lastError ? 'ERROR' : 'OPENING') + '</span>';
   const errHtml = s.lastError
     ? '<div class="serr">⚠ ' + escHtml(s.lastError) + '</div>' : '';
@@ -1467,7 +1465,7 @@ function cardHtml(s) {
     : '';
 
   return '<div class="sc-sticky">'
-    + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + holdBadge + '</span>' + connStatus + '</div>'
+    + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + holdBadge + '</span>' + connStatus + '</div>'
     + errHtml
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
     + '<div class="sc-lbl-row">'
