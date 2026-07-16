@@ -2007,7 +2007,8 @@ class _RtlSdr:
                                      ctypes.c_uint32(0), ctypes.c_uint32(buf_len))
 
     def cancel_async(self):
-        self._lib.rtlsdr_cancel_async(self._dev)
+        if self._dev:
+            self._lib.rtlsdr_cancel_async(self._dev)
 
     def read_samples(self, num_samples: int) -> "np.ndarray":
         import ctypes
@@ -2121,11 +2122,13 @@ class RTLFMScanner:
         """Signal the scan loop to exit and wait for the device to close cleanly."""
         self._running = False
         self._resume_event.set()   # unblock any dwell sleep
-        # Cancel the librtlsdr async read so the reader thread unblocks immediately
-        # rather than waiting up to 5 s for the iq_q.get() timeout.
+        # Close the device directly — rtlsdr_close() calls cancel_async internally
+        # and releases the USB device, which reliably unblocks rtlsdr_read_async.
+        # cancel_async() alone is sometimes insufficient.  The scan loop's finally
+        # block will call close() again; _RtlSdr.close() is idempotent (_dev guard).
         sdr = self._sdr_ref
         if sdr is not None:
-            try: sdr.cancel_async()
+            try: sdr.close()
             except Exception: pass
         if hasattr(self, '_thread') and self._thread.is_alive():
             self._thread.join(timeout=timeout)
