@@ -2490,11 +2490,16 @@ class RTLFMScanner:
                         deemph_z = 0.0
                     else:
                         # FM / NFM — FM discriminator (phase-difference method).
-                        # NFM uses a tighter deviation scale (±2.5 kHz vs ±5 kHz for FM).
-                        if ch_mode == 'nfm':
-                            ch_fm_scale = self.audio_rate / (2.0 * np.pi * 2500.0)
+                        # Deviation scale: if channel bandwidth is set, derive from it
+                        # (land mobile standard: max deviation ≈ channel_bw / 5).
+                        # Otherwise fall back to mode default.
+                        if ch_bw_khz > 0:
+                            deviation_hz = ch_bw_khz * 1000.0 / 5.0
+                        elif ch_mode == 'nfm':
+                            deviation_hz = 2500.0   # ±2.5 kHz (12.5 kHz channel standard)
                         else:
-                            ch_fm_scale = fm_scale  # standard FM: ±5 kHz deviation
+                            deviation_hz = 5000.0   # ±5.0 kHz (25 kHz channel standard)
+                        ch_fm_scale = self.audio_rate / (2.0 * np.pi * deviation_hz)
 
                         # Prepend last IQ sample to maintain phase continuity across chunks.
                         if last_iq is not None:
