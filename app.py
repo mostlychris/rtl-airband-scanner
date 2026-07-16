@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json, asyncio, threading, argparse, uvicorn, struct, signal
 import numpy as np
-from scipy.signal import lfilter, firwin, butter, lfilter_zi
+from scipy.signal import lfilter, firwin, butter, lfilter_zi, iirnotch
 from pathlib import Path
 from datetime import datetime
 from collections import deque
@@ -546,8 +546,8 @@ select.modal-in{cursor:pointer}
         <input class="modal-in" id="chModalPL" type="number" step="0.1" min="0" placeholder="e.g. 100.0 (blank = off)">
       </div>
       <div class="modal-field">
-        <label class="modal-lbl">Sub-audio filter cutoff (Hz)</label>
-        <input class="modal-in" id="chModalHPF" type="number" step="1" min="0" max="1000" placeholder="e.g. 300 (blank = off)">
+        <label class="modal-lbl">Sub-audio tone filter (Hz)</label>
+        <input class="modal-in" id="chModalHPF" type="number" step="0.1" min="0" max="1000" placeholder="e.g. 179.9 (blank = off)">
       </div>
       <div class="modal-field">
         <label class="modal-lbl">Squelch RMS</label>
@@ -2305,7 +2305,6 @@ class RTLFMScanner:
         # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
         _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
         _deemph_beta  = 1.0 - _deemph_alpha
-        _hp_pl_nyq = self.audio_rate / 2.0   # used to compute per-channel HPF coefficients
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         # Transition-band analysis: stopband edge ≈ cutoff + (8/taps)*Nyquist
@@ -2446,7 +2445,8 @@ class RTLFMScanner:
                 deemph_z        = 0.0
                 hp_pl_b = hp_pl_a = hp_pl_zi = None  # computed once per hop if ch_hp_filter > 0
                 if ch_hp_filter > 0:
-                    hp_pl_b, hp_pl_a = butter(4, min(ch_hp_filter, _hp_pl_nyq - 1) / _hp_pl_nyq, btype='high')
+                    # Notch at the exact tone frequency; Q=35 → ~±3 Hz bandwidth.
+                    hp_pl_b, hp_pl_a = iirnotch(ch_hp_filter, Q=35.0, fs=self.audio_rate)
                     hp_pl_zi = lfilter_zi(hp_pl_b, hp_pl_a) * 0.0
                 _last_dbg_state = None
                 ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
