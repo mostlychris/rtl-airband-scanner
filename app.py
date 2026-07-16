@@ -359,6 +359,9 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .modal-body{padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
 .modal-field{display:flex;flex-direction:column;gap:4px}
 .modal-field.full{grid-column:1/-1}
+.modal-field-check{justify-content:center;padding:4px 0}
+.modal-chk-lbl{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text);cursor:pointer;user-select:none}
+.modal-chk-lbl input[type=checkbox]{width:14px;height:14px;accent-color:var(--green);cursor:pointer}
 .modal-lbl{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:#5a8aaa}
 .modal-in{
   background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;
@@ -488,14 +491,6 @@ select.modal-in{cursor:pointer}
     <div class="ac-knob-val" id="aLPLbl">3.0k</div>
   </div>
   <div class="ac-seg-group">
-    <div class="ac-seg-lbl">HP Cut</div>
-    <div class="ac-seg" id="aHPSeg">
-      <button class="ac-seg-btn" data-val="0" onclick="setHP(0)">OFF</button>
-      <button class="ac-seg-btn" data-val="100" onclick="setHP(100)">100</button>
-      <button class="ac-seg-btn" data-val="300" onclick="setHP(300)">300</button>
-    </div>
-  </div>
-  <div class="ac-seg-group">
     <div class="ac-seg-lbl">SQ Tail</div>
     <div class="ac-seg">
       <button class="ac-seg-btn" id="aSqTailBtn" onclick="toggleSqTail()">ON</button>
@@ -554,6 +549,9 @@ select.modal-in{cursor:pointer}
         <label class="modal-lbl">CTCSS / PL Tone (Hz)</label>
         <input class="modal-in" id="chModalPL" type="number" step="0.1" min="0" placeholder="e.g. 100.0 (blank = off)">
       </div>
+      <div class="modal-field modal-field-check">
+        <label class="modal-chk-lbl"><input type="checkbox" id="chModalHPF"> Filter sub-audio tones (300 Hz HPF)</label>
+      </div>
       <div class="modal-field">
         <label class="modal-lbl">Squelch RMS</label>
         <input class="modal-in" id="chModalSQ" type="number" step="0.001" min="0.001" max="0.5" placeholder="e.g. 0.050">
@@ -602,7 +600,6 @@ function escHtml(s) {
 // ── Audio settings (persisted in localStorage) ────────────────────────────────
 const A = {
   vol:    Math.min(1, Math.max(0, parseFloat(localStorage.getItem('a_vol') ?? '1') || 1)),
-  hp:     parseInt(  localStorage.getItem('a_hp')     ?? '0',   10),
   lp:     parseInt(  localStorage.getItem('a_lp')     ?? '3000', 10),
   sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
 };
@@ -680,7 +677,7 @@ function _initWebAudioGraph() {
     const src = _audioCtx.createMediaElementSource(_audEl);
     _hpNode  = _audioCtx.createBiquadFilter();
     _hpNode.type = 'highpass';
-    _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent when off
+    _hpNode.frequency.value = 10;  // transparent — HPF now done per-channel in scan loop
     _lpNode  = _audioCtx.createBiquadFilter();
     _lpNode.type = 'lowpass';
     _lpNode.frequency.value = A.lp;
@@ -894,7 +891,7 @@ async function _mseConnect() {
   // silence; WebSocket connections survive because Chrome manages them as
   // persistent connections (same as rdio-scanner's approach).
   const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const audioWs = new WebSocket(`${wsProto}//${location.host}/ws/audio?hp=${A.hp}&lp=${A.lp}`);
+  const audioWs = new WebSocket(`${wsProto}//${location.host}/ws/audio?lp=${A.lp}`);
   audioWs.binaryType = 'arraybuffer';
 
   // Wire abort signal → WebSocket close
@@ -974,7 +971,7 @@ function openAudioStream(mount) {
   console.log(`[audio] openAudioStream(${mount}) sqtail=${A.sqtail} mseActive=${_mseActive} ctxState=${_audioCtx ? _audioCtx.state : 'none'} paused=${_audEl ? _audEl.paused : 'n/a'}`);
   if (_isNativeApp) {
     // Hand off to ScannerService — AudioTrack handles PCM directly.
-    window.AndroidNative.startAudio(location.origin + '/stream?lp=' + A.lp + '&hp=' + A.hp);
+    window.AndroidNative.startAudio(location.origin + '/stream?lp=' + A.lp);
     _applyVolume();
     _updateMediaSession(true);
     updateAudioUI();
@@ -1085,6 +1082,7 @@ function onMsg(m) {
       s.channelBank       = s.channelBank       || {};
       s.channelModulation = s.channelModulation || {};
       s.channelBandwidth  = s.channelBandwidth  || {};
+      s.channelHpFilter   = s.channelHpFilter   || {};
       s.banks             = s.banks             || {};
       s.skipped        = s.skipped        || [];
       s.holdFreq       = s.holdFreq       || null;
@@ -1245,6 +1243,7 @@ function onMsg(m) {
     s.channelBank       = m.channelBank       || {};
     s.channelModulation = m.channelModulation || {};
     s.channelBandwidth  = m.channelBandwidth  || {};
+    s.channelHpFilter   = m.channelHpFilter   || {};
     s.banks             = m.banks             || {};
     s.defaultSquelch = m.defaultSquelch;
     s.defaultGain    = m.defaultGain;
@@ -1587,6 +1586,7 @@ function openChModal(freq) {
   const cbank = s ? (s.channelBank || {}) : {};
   const cmod  = s ? (s.channelModulation || {}) : {};
   const cbw   = s ? (s.channelBandwidth || {}) : {};
+  const chpf  = s ? (s.channelHpFilter  || {}) : {};
   const defSq = s ? (s.defaultSquelch || 0.05) : 0.05;
   const defGn = s ? (s.defaultGain || 'auto') : 'auto';
 
@@ -1599,6 +1599,7 @@ function openChModal(freq) {
   document.getElementById('chModalMode').value  = cmod[freq]  || '';
   document.getElementById('chModalBW').value    = cbw[freq]   || '';
   document.getElementById('chModalPL').value    = cpl[freq]   || '';
+  document.getElementById('chModalHPF').checked = !!chpf[freq];
   document.getElementById('chModalSQ').value    = freq in csq ? csq[freq].toFixed(3) : defSq.toFixed(3);
   document.getElementById('chModalGain').value  = cgain[freq] || defGn;
   document.getElementById('chModal').classList.add('open');
@@ -1615,6 +1616,7 @@ function showAddChannel() {
   document.getElementById('chModalMode').value  = '';
   document.getElementById('chModalBW').value    = '';
   document.getElementById('chModalPL').value    = '';
+  document.getElementById('chModalHPF').checked = false;
   const mount = Object.keys(S.streams)[0];
   const s = mount ? S.streams[mount] : null;
   document.getElementById('chModalSQ').value  = s ? (s.defaultSquelch || 0.05).toFixed(3) : '0.050';
@@ -1637,6 +1639,7 @@ function saveChModal() {
   const bk    = (document.getElementById('chModalBank').value || '').trim();
   const md    = (document.getElementById('chModalMode').value || '').trim();
   const bw    = parseFloat(document.getElementById('chModalBW').value) || 0;
+  const hpf   = document.getElementById('chModalHPF').checked;
   if (!freq) return;
   fetch('/api/channel', {
     method: 'PUT',
@@ -1647,6 +1650,7 @@ function saveChModal() {
       gain: gn, pl: isNaN(pl) ? 0 : pl,
       bank: bk, modulation: md,
       bandwidth: bw || null,
+      hp_filter: hpf,
     }),
   }).then(() => closeChModal()).catch(e => console.error('[api]', e));
 }
@@ -1748,15 +1752,8 @@ function setVol(v) {
   _applyVolume();
 }
 function setHP(v) {
-  A.hp = parseInt(v, 10);
-  localStorage.setItem('a_hp', A.hp);
-  document.querySelectorAll('#aHPSeg .ac-seg-btn').forEach(b =>
-    b.classList.toggle('active', parseInt(b.dataset.val) === A.hp));
-  if (_hpNode) {
-    _hpNode.frequency.value = A.hp > 0 ? A.hp : 10;  // 10 Hz ≈ transparent
-  } else if (_mseActive && S.audioOn) {
-    _mseConnect();
-  } else if (_isNativeApp && audMount) {
+  // kept as no-op for backwards compatibility with any bookmarked calls
+  if (_isNativeApp && audMount) {
     openAudioStream(audMount);
   }
 }
@@ -1793,7 +1790,6 @@ function initControls() {
     onChange: v => { v = Math.round(v/500)*500; document.getElementById('aLPLbl').textContent = (v/1000).toFixed(1)+'k'; A.lp=v; localStorage.setItem('a_lp',v); if(_lpNode)_lpNode.frequency.value=v; else if(_mseActive&&S.audioOn)_mseConnect(); else if(_isNativeApp&&audMount)openAudioStream(audMount); }
   });
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + 'k';
-  setHP(A.hp);
   const sqBtn = document.getElementById('aSqTailBtn');
   if (sqBtn) sqBtn.classList.toggle('active', !!A.sqtail);
   if (_isAndroidBrowser && 'wakeLock' in navigator)
@@ -2053,6 +2049,7 @@ class RTLFMScanner:
                  channel_bank: dict[str, str] | None = None,
                  channel_modulation: dict[str, str] | None = None,
                  channel_bandwidth: dict[str, float] | None = None,
+                 channel_hp_filter: dict[str, bool] | None = None,
                  banks_enabled: dict[str, bool] | None = None,
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
@@ -2072,6 +2069,7 @@ class RTLFMScanner:
         self.channel_bank       = channel_bank       or {}  # per-freq bank name ('' = Default)
         self.channel_modulation = channel_modulation or {}  # per-freq mode: 'fm','nfm','am' (absent = global modulation)
         self.channel_bandwidth  = channel_bandwidth  or {}  # per-freq channel bandwidth in kHz (absent = auto)
+        self.channel_hp_filter  = channel_hp_filter  or {}  # per-freq HPF at 300 Hz to strip sub-audio tones
         self.banks_enabled      = banks_enabled      or {}  # bank name → enabled (absent = True)
         self.skipped         = skipped or set()       # freqs excluded from scan rotation
         self.debug           = debug
@@ -2141,7 +2139,8 @@ class RTLFMScanner:
                     pl: float | None = None,
                     bank: str | None = None,
                     modulation: str | None = None,
-                    bandwidth: float | None = None) -> None:
+                    bandwidth: float | None = None,
+                    hp_filter: bool | None = None) -> None:
         with self._lock:
             self.channels[freq] = label
             if squelch_rms is not None:
@@ -2170,6 +2169,11 @@ class RTLFMScanner:
                     self.channel_bandwidth[freq] = bandwidth
                 else:
                     self.channel_bandwidth.pop(freq, None)
+            if hp_filter is not None:
+                if hp_filter:
+                    self.channel_hp_filter[freq] = True
+                else:
+                    self.channel_hp_filter.pop(freq, None)
 
     def remove_channel(self, freq: str) -> None:
         with self._lock:
@@ -2180,6 +2184,7 @@ class RTLFMScanner:
             self.channel_bank.pop(freq, None)
             self.channel_modulation.pop(freq, None)
             self.channel_bandwidth.pop(freq, None)
+            self.channel_hp_filter.pop(freq, None)
             self.skipped.discard(freq)
             if self._active_freq == freq:
                 self._active_freq  = None
@@ -2303,6 +2308,9 @@ class RTLFMScanner:
         # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
         _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
         _deemph_beta  = 1.0 - _deemph_alpha
+        # Per-channel sub-audio HPF: 2nd-order Butterworth at 300 Hz strips all CTCSS tones.
+        _hp_pl_b, _hp_pl_a = butter(2, 300.0 / (self.audio_rate / 2.0), btype='high')
+        _hp_pl_zi_init = lfilter_zi(_hp_pl_b, _hp_pl_a)
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         # Transition-band analysis: stopband edge ≈ cutoff + (8/taps)*Nyquist
@@ -2426,6 +2434,7 @@ class RTLFMScanner:
                     pl_tone     = self.channel_pl.get(freq_str, 0.0)
                     ch_mode     = self.channel_modulation.get(freq_str, self.modulation).lower()
                     ch_bw_khz   = self.channel_bandwidth.get(freq_str, 0.0)  # 0 = auto
+                    ch_hp_filter = self.channel_hp_filter.get(freq_str, False)
                 freq_hz   = int(float(freq_str) * 1_000_000)
 
                 if self.debug:
@@ -2440,6 +2449,7 @@ class RTLFMScanner:
                 last_sig_t      = 0.0
                 last_iq         = None   # per-frequency; valid across chunks with async continuity
                 deemph_z        = 0.0
+                hp_pl_zi        = None   # initialized on first chunk when ch_hp_filter is True
                 _last_dbg_state = None
                 ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
                 ctcss_detected: bool = (pl_tone == 0.0)  # pessimistic for PL channels; True when no PL configured
@@ -2549,6 +2559,11 @@ class RTLFMScanner:
                         )
                         deemph_z = float(zf[0])
                         audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
+                        if ch_hp_filter:
+                            if hp_pl_zi is None:
+                                hp_pl_zi = _hp_pl_zi_init.copy()
+                            audio_hp, hp_pl_zi = lfilter(_hp_pl_b, _hp_pl_a, audio, zi=hp_pl_zi)
+                            audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
 
                         # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
                         # a captured FM carrier drives it near zero.
@@ -2807,6 +2822,8 @@ def _save_config() -> None:
                 bw = scanner.channel_bandwidth.get(freq, 0.0)
                 if bw:
                     entry["bandwidth"] = bw
+                if scanner.channel_hp_filter.get(freq):
+                    entry["hp_filter"] = True
                 new_channels[freq] = entry if len(entry) > 1 else lbl
         cfg["channels"] = new_channels
         with scanner._lock:
@@ -2830,6 +2847,7 @@ def _channels_event() -> dict:
             "channelBank":        dict(scanner.channel_bank),
             "channelModulation":  dict(scanner.channel_modulation),
             "channelBandwidth":   dict(scanner.channel_bandwidth),
+            "channelHpFilter":    dict(scanner.channel_hp_filter),
             "banks":              scanner._bank_list_locked(),
             "defaultSquelch":     scanner.squelch_rms,
             "defaultGain":    scanner.gain,
@@ -2912,6 +2930,7 @@ def _state() -> dict:
         channel_bank       = dict(s.channel_bank)
         channel_modulation = dict(s.channel_modulation)
         channel_bandwidth  = dict(s.channel_bandwidth)
+        channel_hp_filter  = dict(s.channel_hp_filter)
         banks              = s._bank_list_locked()
         skipped         = sorted(s.skipped)
         hold_freq       = s.hold_freq
@@ -2933,6 +2952,7 @@ def _state() -> dict:
             "channelBank":        channel_bank,
             "channelModulation":  channel_modulation,
             "channelBandwidth":   channel_bandwidth,
+            "channelHpFilter":    channel_hp_filter,
             "banks":              banks,
             "defaultSquelch": s.squelch_rms,
             "defaultGain":    s.gain,
@@ -3138,14 +3158,15 @@ async def api_put_channel(request: Request):
         mod_arg = str(mod_arg).strip().lower()
     bw_raw = body.get("bandwidth")
     bw_arg: float | None = float(bw_raw) if bw_raw not in (None, '', 0) else None
+    hp_filter_arg: bool | None = bool(body["hp_filter"]) if "hp_filter" in body else None
     if gain_arg is ... and pl_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
+        scanner.set_channel(freq, label, squelch_rms, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg, hp_filter=hp_filter_arg)
     elif gain_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, pl=pl_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
+        scanner.set_channel(freq, label, squelch_rms, pl=pl_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg, hp_filter=hp_filter_arg)
     elif pl_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, gain_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
+        scanner.set_channel(freq, label, squelch_rms, gain_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg, hp_filter=hp_filter_arg)
     else:
-        scanner.set_channel(freq, label, squelch_rms, gain_arg, pl_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg)
+        scanner.set_channel(freq, label, squelch_rms, gain_arg, pl_arg, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg, hp_filter=hp_filter_arg)
     _save_config()
     _emit(_channels_event())
     return {"ok": True, "freq": freq}
@@ -3672,6 +3693,7 @@ def main():
     channel_bank        : dict[str, str]   = {}
     channel_modulation  : dict[str, str]   = {}
     channel_bandwidth   : dict[str, float] = {}
+    channel_hp_filter   : dict[str, bool]  = {}
     for freq, val in raw_channels.items():
         if isinstance(val, dict):
             channels[freq] = val.get("label", freq)
@@ -3692,6 +3714,8 @@ def main():
                         channel_bandwidth[freq] = bw
                 except (TypeError, ValueError):
                     pass
+            if val.get("hp_filter"):
+                channel_hp_filter[freq] = True
         else:
             channels[freq] = str(val)
 
@@ -3709,6 +3733,7 @@ def main():
         channel_bank       = channel_bank,
         channel_modulation = channel_modulation,
         channel_bandwidth  = channel_bandwidth,
+        channel_hp_filter  = channel_hp_filter,
         banks_enabled      = raw_banks_enabled,
         skipped         = set(cfg.get("skipped", [])),
         ppm             = cfg.get("ppm", 0),
