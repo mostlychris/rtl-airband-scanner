@@ -358,11 +358,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .modal-close:hover{color:var(--text);border-color:#2a4a6e}
 .modal-body{padding:16px 18px;display:grid;grid-template-columns:1fr 1fr;gap:10px 14px}
 .modal-field{display:flex;flex-direction:column;gap:4px}
-.modal-field.full{grid-column:1/-1}
-.modal-field-check{justify-content:center;padding:4px 0}
-.modal-chk-lbl{display:flex;align-items:center;gap:8px;font-size:10px;color:var(--text);cursor:pointer;user-select:none}
-.modal-chk-lbl input[type=checkbox]{width:14px;height:14px;accent-color:var(--green);cursor:pointer}
-.modal-lbl{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:#5a8aaa}
+.modal-field.full{grid-column:1/-1}.modal-lbl{font-size:9px;font-weight:700;letter-spacing:.15em;text-transform:uppercase;color:#5a8aaa}
 .modal-in{
   background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;
   padding:6px 9px;font-size:11px;font-family:var(--mono);width:100%;box-sizing:border-box;
@@ -549,8 +545,9 @@ select.modal-in{cursor:pointer}
         <label class="modal-lbl">CTCSS / PL Tone (Hz)</label>
         <input class="modal-in" id="chModalPL" type="number" step="0.1" min="0" placeholder="e.g. 100.0 (blank = off)">
       </div>
-      <div class="modal-field modal-field-check">
-        <label class="modal-chk-lbl"><input type="checkbox" id="chModalHPF"> Filter sub-audio tones (300 Hz HPF)</label>
+      <div class="modal-field">
+        <label class="modal-lbl">Sub-audio filter cutoff (Hz)</label>
+        <input class="modal-in" id="chModalHPF" type="number" step="1" min="0" max="1000" placeholder="e.g. 300 (blank = off)">
       </div>
       <div class="modal-field">
         <label class="modal-lbl">Squelch RMS</label>
@@ -1599,7 +1596,7 @@ function openChModal(freq) {
   document.getElementById('chModalMode').value  = cmod[freq]  || '';
   document.getElementById('chModalBW').value    = cbw[freq]   || '';
   document.getElementById('chModalPL').value    = cpl[freq]   || '';
-  document.getElementById('chModalHPF').checked = !!chpf[freq];
+  document.getElementById('chModalHPF').value    = chpf[freq] || '';
   document.getElementById('chModalSQ').value    = freq in csq ? csq[freq].toFixed(3) : defSq.toFixed(3);
   document.getElementById('chModalGain').value  = cgain[freq] || defGn;
   document.getElementById('chModal').classList.add('open');
@@ -1616,7 +1613,7 @@ function showAddChannel() {
   document.getElementById('chModalMode').value  = '';
   document.getElementById('chModalBW').value    = '';
   document.getElementById('chModalPL').value    = '';
-  document.getElementById('chModalHPF').checked = false;
+  document.getElementById('chModalHPF').value    = '';
   const mount = Object.keys(S.streams)[0];
   const s = mount ? S.streams[mount] : null;
   document.getElementById('chModalSQ').value  = s ? (s.defaultSquelch || 0.05).toFixed(3) : '0.050';
@@ -1639,7 +1636,7 @@ function saveChModal() {
   const bk    = (document.getElementById('chModalBank').value || '').trim();
   const md    = (document.getElementById('chModalMode').value || '').trim();
   const bw    = parseFloat(document.getElementById('chModalBW').value) || 0;
-  const hpf   = document.getElementById('chModalHPF').checked;
+  const hpf   = parseFloat(document.getElementById('chModalHPF').value) || 0;
   if (!freq) return;
   fetch('/api/channel', {
     method: 'PUT',
@@ -2049,7 +2046,7 @@ class RTLFMScanner:
                  channel_bank: dict[str, str] | None = None,
                  channel_modulation: dict[str, str] | None = None,
                  channel_bandwidth: dict[str, float] | None = None,
-                 channel_hp_filter: dict[str, bool] | None = None,
+                 channel_hp_filter: dict[str, float] | None = None,
                  banks_enabled: dict[str, bool] | None = None,
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
@@ -2069,7 +2066,7 @@ class RTLFMScanner:
         self.channel_bank       = channel_bank       or {}  # per-freq bank name ('' = Default)
         self.channel_modulation = channel_modulation or {}  # per-freq mode: 'fm','nfm','am' (absent = global modulation)
         self.channel_bandwidth  = channel_bandwidth  or {}  # per-freq channel bandwidth in kHz (absent = auto)
-        self.channel_hp_filter  = channel_hp_filter  or {}  # per-freq HPF at 300 Hz to strip sub-audio tones
+        self.channel_hp_filter  = channel_hp_filter  or {}  # per-freq HPF cutoff Hz (0/absent = off)
         self.banks_enabled      = banks_enabled      or {}  # bank name → enabled (absent = True)
         self.skipped         = skipped or set()       # freqs excluded from scan rotation
         self.debug           = debug
@@ -2140,7 +2137,7 @@ class RTLFMScanner:
                     bank: str | None = None,
                     modulation: str | None = None,
                     bandwidth: float | None = None,
-                    hp_filter: bool | None = None) -> None:
+                    hp_filter: float | None = None) -> None:
         with self._lock:
             self.channels[freq] = label
             if squelch_rms is not None:
@@ -2170,8 +2167,8 @@ class RTLFMScanner:
                 else:
                     self.channel_bandwidth.pop(freq, None)
             if hp_filter is not None:
-                if hp_filter:
-                    self.channel_hp_filter[freq] = True
+                if hp_filter > 0:
+                    self.channel_hp_filter[freq] = hp_filter
                 else:
                     self.channel_hp_filter.pop(freq, None)
 
@@ -2308,9 +2305,7 @@ class RTLFMScanner:
         # De-emphasis: 1-pole IIR lowpass at 2122 Hz (τ = 75 μs North-American standard).
         _deemph_alpha = float(np.exp(-1.0 / (self.audio_rate * 75e-6)))
         _deemph_beta  = 1.0 - _deemph_alpha
-        # Per-channel sub-audio HPF: 2nd-order Butterworth at 300 Hz strips all CTCSS tones.
-        _hp_pl_b, _hp_pl_a = butter(2, 300.0 / (self.audio_rate / 2.0), btype='high')
-        _hp_pl_zi_init = lfilter_zi(_hp_pl_b, _hp_pl_a)
+        _hp_pl_nyq = self.audio_rate / 2.0   # used to compute per-channel HPF coefficients
 
         overrides = ", ".join(f"{f}={v}" for f, v in sorted(self.channel_squelch.items()))
         # Transition-band analysis: stopband edge ≈ cutoff + (8/taps)*Nyquist
@@ -2434,7 +2429,7 @@ class RTLFMScanner:
                     pl_tone     = self.channel_pl.get(freq_str, 0.0)
                     ch_mode     = self.channel_modulation.get(freq_str, self.modulation).lower()
                     ch_bw_khz   = self.channel_bandwidth.get(freq_str, 0.0)  # 0 = auto
-                    ch_hp_filter = self.channel_hp_filter.get(freq_str, False)
+                    ch_hp_filter = self.channel_hp_filter.get(freq_str, 0.0)  # Hz; 0 = off
                 freq_hz   = int(float(freq_str) * 1_000_000)
 
                 if self.debug:
@@ -2449,7 +2444,10 @@ class RTLFMScanner:
                 last_sig_t      = 0.0
                 last_iq         = None   # per-frequency; valid across chunks with async continuity
                 deemph_z        = 0.0
-                hp_pl_zi        = None   # initialized on first chunk when ch_hp_filter is True
+                hp_pl_b = hp_pl_a = hp_pl_zi = None  # computed once per hop if ch_hp_filter > 0
+                if ch_hp_filter > 0:
+                    hp_pl_b, hp_pl_a = butter(2, min(ch_hp_filter, _hp_pl_nyq - 1) / _hp_pl_nyq, btype='high')
+                    hp_pl_zi = lfilter_zi(hp_pl_b, hp_pl_a) * 0.0
                 _last_dbg_state = None
                 ctcss_buf: list      = []    # accumulation buffer for CTCSS detection
                 ctcss_detected: bool = (pl_tone == 0.0)  # pessimistic for PL channels; True when no PL configured
@@ -2559,10 +2557,8 @@ class RTLFMScanner:
                         )
                         deemph_z = float(zf[0])
                         audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
-                        if ch_hp_filter:
-                            if hp_pl_zi is None:
-                                hp_pl_zi = _hp_pl_zi_init.copy()
-                            audio_hp, hp_pl_zi = lfilter(_hp_pl_b, _hp_pl_a, audio, zi=hp_pl_zi)
+                        if hp_pl_b is not None:
+                            audio_hp, hp_pl_zi = lfilter(hp_pl_b, hp_pl_a, audio, zi=hp_pl_zi)
                             audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
 
                         # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
@@ -2822,8 +2818,9 @@ def _save_config() -> None:
                 bw = scanner.channel_bandwidth.get(freq, 0.0)
                 if bw:
                     entry["bandwidth"] = bw
-                if scanner.channel_hp_filter.get(freq):
-                    entry["hp_filter"] = True
+                hpf_hz = scanner.channel_hp_filter.get(freq, 0.0)
+                if hpf_hz > 0:
+                    entry["hp_filter"] = hpf_hz
                 new_channels[freq] = entry if len(entry) > 1 else lbl
         cfg["channels"] = new_channels
         with scanner._lock:
@@ -3158,7 +3155,7 @@ async def api_put_channel(request: Request):
         mod_arg = str(mod_arg).strip().lower()
     bw_raw = body.get("bandwidth")
     bw_arg: float | None = float(bw_raw) if bw_raw not in (None, '', 0) else None
-    hp_filter_arg: bool | None = bool(body["hp_filter"]) if "hp_filter" in body else None
+    hp_filter_arg: float | None = (float(body["hp_filter"]) if body["hp_filter"] else 0.0) if "hp_filter" in body else None
     if gain_arg is ... and pl_arg is ...:
         scanner.set_channel(freq, label, squelch_rms, bank=bank_arg, modulation=mod_arg, bandwidth=bw_arg, hp_filter=hp_filter_arg)
     elif gain_arg is ...:
@@ -3714,8 +3711,12 @@ def main():
                         channel_bandwidth[freq] = bw
                 except (TypeError, ValueError):
                     pass
-            if val.get("hp_filter"):
-                channel_hp_filter[freq] = True
+            try:
+                hpf_hz = float(val.get("hp_filter") or 0)
+                if hpf_hz > 0:
+                    channel_hp_filter[freq] = hpf_hz
+            except (TypeError, ValueError):
+                pass
         else:
             channels[freq] = str(val)
 
