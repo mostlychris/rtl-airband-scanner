@@ -2499,8 +2499,10 @@ class RTLFMScanner:
                         ctcss_window   = (max(512, int(self.audio_rate / pl_tone * 6))
                                           if pl_tone > 0.0 else _CTCSS_WINDOW)
                     try:
-                        raw = iq_q.get(timeout=5.0)
+                        raw = iq_q.get(timeout=0.5)
                     except _q.Empty:
+                        if not self._running:
+                            break   # clean shutdown — exit inner chunk loop
                         raise RuntimeError("rtlsdr async read timed out — device stalled?")
 
                     # Stage 1 — FIR anti-aliasing + stride decimation.
@@ -2979,7 +2981,8 @@ async def _startup():
 @app.on_event("shutdown")
 async def _shutdown():
     if scanner:
-        await asyncio.get_event_loop().run_in_executor(None, scanner.stop_and_join)
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: scanner.stop_and_join(timeout=15.0))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3749,15 +3752,14 @@ def main():
         on_audio        = _audio_cb,
     )
 
-    # On SIGINT/SIGTERM: cancel the RTL-SDR async read immediately so the
-    # scanner thread can call sdr.close() before the process exits.  Without
-    # this the kernel holds the USB device for ~90 s and the next startup blocks.
-    def _sig_handler(sig, frame):
-        print(f"\n[Scanner] Signal {sig} — closing RTL-SDR device…")
-        scanner.stop_and_join(timeout=4.0)
+    # SIGTERM is handled by uvicorn (which fires @app.on_event("shutdown")).
+    # SIGINT from a terminal would normally raise KeyboardInterrupt through uvicorn,
+    # but install a handler anyway so interactive Ctrl-C also closes the device cleanly.
+    def _sigint_handler(sig, frame):
+        print(f"\n[Scanner] SIGINT — closing RTL-SDR device…")
+        scanner.stop_and_join(timeout=8.0)
         raise SystemExit(0)
-    signal.signal(signal.SIGINT,  _sig_handler)
-    signal.signal(signal.SIGTERM, _sig_handler)
+    signal.signal(signal.SIGINT, _sigint_handler)
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")
     uvicorn.run(
