@@ -11,7 +11,7 @@ Install:
 """
 from __future__ import annotations
 
-import json, asyncio, threading, argparse, uvicorn, struct
+import json, asyncio, threading, argparse, uvicorn, struct, signal
 import numpy as np
 from scipy.signal import lfilter, firwin, butter, lfilter_zi
 from pathlib import Path
@@ -2100,6 +2100,7 @@ class RTLFMScanner:
         # telemetry so the client can compute true lag without wall-clock estimates.
         self.audio_seq: int = 0
         self._resume_event = threading.Event()  # set to force immediate scan advance
+        self._sdr_ref: "_RtlSdr | None" = None  # set while device is open; used for clean shutdown
 
     @property
     def active_freq(self):
@@ -2115,10 +2116,24 @@ class RTLFMScanner:
 
     def start(self):
         self._running = True
-        threading.Thread(target=self._loop, daemon=True, name="scanner").start()
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="scanner")
+        self._thread.start()
 
     def stop(self):
         self._running = False
+
+    def stop_and_join(self, timeout: float = 6.0) -> None:
+        """Signal the scan loop to exit and wait for the device to close cleanly."""
+        self._running = False
+        self._resume_event.set()   # unblock any dwell sleep
+        # Cancel the librtlsdr async read so the reader thread unblocks immediately
+        # rather than waiting up to 5 s for the iq_q.get() timeout.
+        sdr = self._sdr_ref
+        if sdr is not None:
+            try: sdr.cancel_async()
+            except Exception: pass
+        if hasattr(self, '_thread') and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
 
     def set_channel(self, freq: str, label: str,
                     squelch_rms: float | None = None,
@@ -2307,6 +2322,7 @@ class RTLFMScanner:
         dev_index = int(self.device) if self.device.isdigit() else \
                     _RtlSdr.index_for_serial("librtlsdr.so.0", self.device)
         sdr = _RtlSdr(device_index=dev_index)
+        self._sdr_ref = sdr
 
         iq_q           = _q.Queue(maxsize=32)
         _reader_thread = [None]
@@ -2696,6 +2712,7 @@ class RTLFMScanner:
 
         finally:
             _stop_reader()
+            self._sdr_ref = None
             try:
                 sdr.close()
             except Exception:
@@ -2944,7 +2961,8 @@ async def _startup():
 
 @app.on_event("shutdown")
 async def _shutdown():
-    if scanner: scanner.stop()
+    if scanner:
+        await asyncio.get_event_loop().run_in_executor(None, scanner.stop_and_join)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -3704,6 +3722,16 @@ def main():
         on_event        = _emit,
         on_audio        = _audio_cb,
     )
+
+    # On SIGINT/SIGTERM: cancel the RTL-SDR async read immediately so the
+    # scanner thread can call sdr.close() before the process exits.  Without
+    # this the kernel holds the USB device for ~90 s and the next startup blocks.
+    def _sig_handler(sig, frame):
+        print(f"\n[Scanner] Signal {sig} — closing RTL-SDR device…")
+        scanner.stop_and_join(timeout=4.0)
+        raise SystemExit(0)
+    signal.signal(signal.SIGINT,  _sig_handler)
+    signal.signal(signal.SIGTERM, _sig_handler)
 
     print(f"Open http://<pi-ip>:{args.listen_port} in your browser")
     uvicorn.run(
