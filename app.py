@@ -213,15 +213,17 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 /* ── Frequency display (LCD panel) ───────────────────────── */
 .sc-display{
   background:var(--panel);
-  padding:12px 14px 10px;
+  padding:10px 14px 8px;
   border-bottom:1px solid var(--panel-b);
   box-sizing:border-box;overflow:hidden;
 }
+.sc-lbl-row{display:flex;align-items:center;gap:10px;min-width:0}
 .sc-lbl{
   font-family:var(--mono);font-size:26px;font-weight:600;
   letter-spacing:.04em;line-height:1;
   color:var(--muted);text-transform:uppercase;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  flex:1;min-width:0;
   transition:color .4s,text-shadow .4s;
 }
 .sc-display.active .sc-lbl{color:var(--green);text-shadow:var(--glow)}
@@ -240,25 +242,24 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .sc-ctcss.info{color:var(--cyan);opacity:.85}
 .sc-ctcss.match{color:var(--green);text-shadow:var(--glow-sm)}
 
-/* ── Signal meter (segmented LED bar) ─────────────────────── */
-.sqbar{
-  height:8px;background:var(--panel);padding:0 14px;margin-bottom:0;
-  display:flex;align-items:center;border-bottom:1px solid var(--panel-b);
+/* ── Signal meter (inline segmented blocks) ────────────────── */
+.sc-meter{display:flex;align-items:center;gap:5px;flex-shrink:0;margin-left:auto}
+.sc-segs{display:flex;gap:2px;align-items:flex-end}
+.sc-seg{
+  width:5px;border-radius:1px;
+  background:var(--dim);transition:background .1s,box-shadow .1s;
 }
-.sqfill-wrap{flex:1;height:4px;background:var(--dim);border-radius:2px;overflow:hidden;position:relative}
-.sqfill{
-  height:100%;width:0%;
-  background:linear-gradient(90deg,#14a80a 0%,#39ff14 55%,#ccff00 75%,#ffcc00 88%,#ff5000 100%);
-  transition:width .12s linear;
-  position:relative;
-}
-.sqfill::after{
-  content:'';position:absolute;inset:0;
-  background-image:repeating-linear-gradient(90deg,transparent 0,transparent 5px,var(--panel) 5px,var(--panel) 7px);
-}
-.sqfill.active{box-shadow:0 0 4px rgba(57,255,20,.6)}
-.sq-label{font-size:8px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-left:8px;flex-shrink:0}
-.sq-level{font-size:9px;font-family:monospace;color:var(--muted);margin-left:10px;flex-shrink:0;min-width:11ch;text-align:right}
+/* varying heights for a classic bar-graph look */
+.sc-seg:nth-child(-n+4){height:8px}
+.sc-seg:nth-child(n+5):nth-child(-n+8){height:11px}
+.sc-seg:nth-child(n+9):nth-child(-n+11){height:14px}
+.sc-seg:nth-child(n+12){height:17px}
+/* lit colours per zone */
+.sc-seg.lit-g{background:#2dff6e;box-shadow:0 0 4px rgba(45,255,110,.6)}
+.sc-seg.lit-y{background:#ffb800;box-shadow:0 0 4px rgba(255,184,0,.5)}
+.sc-seg.lit-r{background:#ff3344;box-shadow:0 0 4px rgba(255,51,68,.5)}
+.sc-db{font-family:var(--mono);font-size:10px;color:var(--muted);min-width:6ch;text-align:right;transition:color .3s;flex-shrink:0}
+.sc-display.active .sc-db{color:var(--green)}
 
 /* ── Action buttons (SKIP / EDIT / DEL) ─────────────────── */
 .sc-acts{
@@ -307,17 +308,18 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .ch-t{font-size:10px;color:var(--muted);font-family:var(--mono);flex-shrink:0;transition:color .2s}
 .ch.active .ch-t{color:var(--cyan);opacity:.7}
 .noch{padding:12px;color:var(--muted);font-size:10px;text-align:center;letter-spacing:.15em;text-transform:uppercase}
-.ch-acts{display:flex;gap:3px;margin-left:auto;flex-shrink:0}
-.ch-icon{
+.ch-acts{display:flex;gap:3px;margin-left:auto;flex-shrink:0;padding-left:6px}
+.ch-btn{
   background:#0a1220;border:1px solid #1a2a3e;cursor:pointer;
-  padding:2px 7px;font-size:9px;color:var(--muted);border-radius:2px;line-height:1.4;
-  letter-spacing:.04em;white-space:nowrap;
+  padding:2px 8px;font-size:8px;font-weight:700;color:var(--muted);border-radius:2px;
+  letter-spacing:.1em;text-transform:uppercase;white-space:nowrap;line-height:1.6;
+  transition:background .12s,border-color .12s,color .12s;
 }
-.ch-icon:hover{background:#132040;border-color:#2a4a70;color:var(--text)}
-.ch-icon.del:hover{border-color:#502020;color:var(--red)}
-.ch-icon.skip:hover{border-color:#504020;color:var(--amber)}
+.ch-btn:hover{background:#132040;border-color:#2a4a70;color:var(--text)}
+.ch-btn.del:hover{background:#200a0a;border-color:#502020;color:var(--red)}
+.ch-btn.skip:hover{background:#1a1200;border-color:#504020;color:var(--amber)}
 .ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:.45}
-.ch.skipped .ch-icon.skip{color:var(--amber);border-color:#503010}
+.ch.skipped .ch-btn.skip{color:var(--amber);border-color:#503010;background:#140e00}
 .ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 12px;flex-wrap:wrap}
 .ch-edit-in{background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;font-family:var(--mono);min-width:0}
 .ch-edit-lbl{flex:1}.ch-edit-sq{width:64px}.ch-edit-gn{width:72px}.ch-edit-pl{width:64px}
@@ -1181,20 +1183,7 @@ function onMsg(m) {
       const thr = st ? (st.pendingFreq && st.channelSquelch && st.channelSquelch[st.pendingFreq]
         ? st.channelSquelch[st.pendingFreq] : (st.defaultSquelch || 0.05)) : 0.05;
       const thrDb = 20 * Math.log10(Math.max(thr, 1e-9));
-      const d = document.getElementById('sqfill_' + eid(m.mount));
-      if (d) {
-        // Scale: 0 % at squelch threshold, 100 % at perfect carrier (0 dB).
-        const pct = m.active ? Math.min(100, Math.max(0,
-          (m.db - thrDb) * 100 / (-thrDb))) : 0;
-        d.style.width = pct + '%';
-        d.className = 'sqfill' + (m.active ? ' active' : '');
-      }
-      const lv = document.getElementById('sqlevel_' + eid(m.mount));
-      if (lv) {
-        lv.textContent = _sigFreq && (m.active || m.db > -90)
-          ? (m.db.toFixed(1) + ' / ' + thrDb.toFixed(1) + ' dB') : '';
-        lv.style.color = m.active ? 'var(--green)' : 'var(--muted)';
-      }
+      _updateMeter(m.mount, m.db, thrDb, m.active);
       // Update detected CTCSS tone display in-place (avoids full card re-render)
       const s = S.streams[m.mount];
       if (s && m.ctcss !== undefined) {
@@ -1272,6 +1261,34 @@ function onMsg(m) {
   } else if (m.type === 'ws_clients') {
     const el = document.getElementById('wscount');
     if (el) el.textContent = m.count > 0 ? `·${m.count}` : '';
+  }
+}
+
+// ── Signal meter helpers ───────────────────────────────────────────────────────
+const _SEG_TOTAL = 12;
+// Segment zones: 0-3 green, 4-7 green, 8-10 yellow, 11 red
+function _segClass(i) {
+  if (i >= 11) return 'lit-r';
+  if (i >= 8)  return 'lit-y';
+  return 'lit-g';
+}
+function _segHtml(litCount) {
+  let h = '';
+  for (let i = 0; i < _SEG_TOTAL; i++) {
+    h += '<div class="sc-seg' + (i < litCount ? ' ' + _segClass(i) : '') + '"></div>';
+  }
+  return h;
+}
+function _updateMeter(mount, db, thrDb, active) {
+  const segs = document.getElementById('sqsegs_' + eid(mount));
+  const lv   = document.getElementById('sqlevel_' + eid(mount));
+  if (segs) {
+    const pct     = active ? Math.min(1, Math.max(0, (db - thrDb) / (-thrDb))) : 0;
+    const litCount = Math.round(pct * _SEG_TOTAL);
+    segs.innerHTML = _segHtml(litCount);
+  }
+  if (lv) {
+    lv.textContent = active ? db.toFixed(1) + ' dB' : '';
   }
 }
 
@@ -1397,9 +1414,9 @@ function cardHtml(s) {
         + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
         + '<span class="ch-t">' + t + '</span>'
         + '<div class="ch-acts">'
-        + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')">' + (skp?'SCAN':'SKIP') + '</button>'
-        + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')">EDIT</button>'
-        + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')">DEL</button>'
+        + '<button class="ch-btn skip" onclick="event.stopPropagation();skipChannel(\'' + f + '\')">' + (skp?'SCAN':'SKIP') + '</button>'
+        + '<button class="ch-btn" onclick="event.stopPropagation();editChannel(\'' + f + '\')">EDIT</button>'
+        + '<button class="ch-btn del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')">DEL</button>'
         + '</div></div>';
     });
   } else if (af) {
@@ -1453,10 +1470,11 @@ function cardHtml(s) {
     + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + holdBadge + '</span>' + connStatus + '</div>'
     + errHtml
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
+    + '<div class="sc-lbl-row">'
     + '<div class="sc-lbl">' + escHtml(primary) + '</div>'
-    + metaHtml
+    + '<div class="sc-meter"><div class="sc-segs" id="sqsegs_' + eid(s.mount) + '">' + _segHtml(0) + '</div><span class="sc-db" id="sqlevel_' + eid(s.mount) + '"></span></div>'
     + '</div>'
-    + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span><span class="sq-level" id="sqlevel_' + eid(s.mount) + '"></span></div>'
+    + metaHtml
     + '</div>'
     + '<div class="ac-inline-slot"></div>'
     + banksPanelHtml
