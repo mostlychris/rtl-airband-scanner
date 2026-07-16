@@ -2037,17 +2037,21 @@ class RTLFMScanner:
             self.banks_enabled[bank] = enabled
         self._resume_event.set()  # skip any held freq that may now be excluded
 
+    def _bank_list_locked(self) -> dict[str, bool]:
+        """Return {bank_name: enabled}. Caller must hold self._lock."""
+        banks: dict[str, bool] = {}
+        for freq in self.channels:
+            b = self.channel_bank.get(freq, '') or 'Default'
+            if b not in banks:
+                banks[b] = self.banks_enabled.get(b, True)
+        if not banks:
+            banks['Default'] = self.banks_enabled.get('Default', True)
+        return banks
+
     def bank_list(self) -> dict[str, bool]:
         """Return {bank_name: enabled} for all known banks including Default."""
         with self._lock:
-            banks: dict[str, bool] = {}
-            for freq in self.channels:
-                b = self.channel_bank.get(freq, '') or 'Default'
-                if b not in banks:
-                    banks[b] = self.banks_enabled.get(b, True)
-            if not banks:
-                banks['Default'] = self.banks_enabled.get('Default', True)
-        return banks
+            return self._bank_list_locked()
 
     def resume_scan(self) -> None:
         """Force the scan loop to advance to the next frequency immediately."""
@@ -2611,7 +2615,7 @@ def _channels_event() -> dict:
             "channelGain":    dict(scanner.channel_gain),
             "channelPL":      dict(scanner.channel_pl),
             "channelBank":    dict(scanner.channel_bank),
-            "banks":          scanner.bank_list(),
+            "banks":          scanner._bank_list_locked(),
             "defaultSquelch": scanner.squelch_rms,
             "defaultGain":    scanner.gain,
             "skipped":        sorted(scanner.skipped),
@@ -2691,7 +2695,7 @@ def _state() -> dict:
         channel_gain    = dict(s.channel_gain)
         channel_pl      = dict(s.channel_pl)
         channel_bank    = dict(s.channel_bank)
-        banks           = s.bank_list()
+        banks           = s._bank_list_locked()
         skipped         = sorted(s.skipped)
         hold_freq       = s.hold_freq
     return {
