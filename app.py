@@ -307,14 +307,17 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .ch-t{font-size:10px;color:var(--muted);font-family:var(--mono);flex-shrink:0;transition:color .2s}
 .ch.active .ch-t{color:var(--cyan);opacity:.7}
 .noch{padding:12px;color:var(--muted);font-size:10px;text-align:center;letter-spacing:.15em;text-transform:uppercase}
-.ch-acts{display:flex;gap:2px;margin-left:auto;flex-shrink:0;visibility:hidden}
-.ch:hover .ch-acts,.ch.skipped .ch-acts{visibility:visible}
-.ch-icon{background:none;border:none;cursor:pointer;padding:1px 5px;font-size:10px;color:var(--muted);border-radius:2px;line-height:1}
-.ch-icon:hover{background:var(--card2);color:var(--text)}
-.ch-icon.del:hover{color:var(--red)}
-.ch-icon.skip:hover{color:var(--amber)}
+.ch-acts{display:flex;gap:3px;margin-left:auto;flex-shrink:0}
+.ch-icon{
+  background:#0a1220;border:1px solid #1a2a3e;cursor:pointer;
+  padding:2px 7px;font-size:9px;color:var(--muted);border-radius:2px;line-height:1.4;
+  letter-spacing:.04em;white-space:nowrap;
+}
+.ch-icon:hover{background:#132040;border-color:#2a4a70;color:var(--text)}
+.ch-icon.del:hover{border-color:#502020;color:var(--red)}
+.ch-icon.skip:hover{border-color:#504020;color:var(--amber)}
 .ch.skipped .ch-f,.ch.skipped .ch-l,.ch.skipped .ch-t,.ch.skipped .ch-dot{opacity:.45}
-.ch.skipped .ch-icon.skip{color:var(--amber)}
+.ch.skipped .ch-icon.skip{color:var(--amber);border-color:#503010}
 .ch-edit-row{display:flex;align-items:center;gap:6px;padding:5px 12px;flex-wrap:wrap}
 .ch-edit-in{background:#080c16;border:1px solid #1e2a3e;color:var(--text);border-radius:3px;padding:2px 6px;font-size:11px;font-family:var(--mono);min-width:0}
 .ch-edit-lbl{flex:1}.ch-edit-sq{width:64px}.ch-edit-gn{width:72px}.ch-edit-pl{width:64px}
@@ -423,7 +426,6 @@ select.modal-in{cursor:pointer}
   .sc-lbl{font-size:20px}
   .sc-btn{padding:8px 4px;font-size:8px}
   .ch{padding:8px 12px}
-  .ch-acts{visibility:visible}
   header{padding:8px 14px;gap:8px}
   .st{display:none}
   h1{font-size:11px;letter-spacing:.14em}
@@ -1395,9 +1397,9 @@ function cardHtml(s) {
         + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
         + '<span class="ch-t">' + t + '</span>'
         + '<div class="ch-acts">'
-        + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')" title="' + (skp?'Include in scan':'Skip frequency') + '">' + (skp?'▶':'⊘') + '</button>'
-        + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')" title="Edit">✏</button>'
-        + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')" title="Remove">✕</button>'
+        + '<button class="ch-icon skip' + (skp?' skipped':'') + '" onclick="event.stopPropagation();skipChannel(\'' + f + '\')">' + (skp?'SCAN':'SKIP') + '</button>'
+        + '<button class="ch-icon" onclick="event.stopPropagation();editChannel(\'' + f + '\')">EDIT</button>'
+        + '<button class="ch-icon del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')">DEL</button>'
         + '</div></div>';
     });
   } else if (af) {
