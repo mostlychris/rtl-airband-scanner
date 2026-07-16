@@ -2562,6 +2562,7 @@ class RTLFMScanner:
                         if hp_pl_b is not None:
                             audio_hp, hp_pl_zi = lfilter(hp_pl_b, hp_pl_a, audio, zi=hp_pl_zi)
                             audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
+                            audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
 
                         # Phase-variance squelch: noise gives var(Δφ) ≈ π²/3;
                         # a captured FM carrier drives it near zero.
