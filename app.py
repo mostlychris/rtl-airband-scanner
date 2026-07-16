@@ -258,7 +258,7 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .sc-seg.lit-g{background:#2dff6e;box-shadow:0 0 4px rgba(45,255,110,.6)}
 .sc-seg.lit-y{background:#ffb800;box-shadow:0 0 4px rgba(255,184,0,.5)}
 .sc-seg.lit-r{background:#ff3344;box-shadow:0 0 4px rgba(255,51,68,.5)}
-.sc-db{font-family:var(--mono);font-size:10px;color:var(--muted);min-width:6ch;text-align:right;transition:color .3s;flex-shrink:0}
+.sc-db{font-family:var(--mono);font-size:10px;color:var(--muted);width:7ch;text-align:right;transition:color .3s;flex-shrink:0}
 .sc-display.active .sc-db{color:var(--green)}
 
 /* ── Action buttons (SKIP / EDIT / DEL) ─────────────────── */
