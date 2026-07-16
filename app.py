@@ -325,6 +325,24 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 .ch-cancel{background:none;border:1px solid #1e2a3e;border-radius:3px;color:var(--muted);cursor:pointer;font-size:9px;letter-spacing:.06em;padding:2px 8px}
 .ch-add-btn{display:flex;align-items:center;gap:5px;padding:5px 12px;font-size:10px;color:var(--muted);cursor:pointer;border-top:1px solid #141e30;transition:color .15s;letter-spacing:.1em;text-transform:uppercase}
 .ch-add-btn:hover{color:var(--cyan)}
+.ch-bank-badge{font-size:8px;color:#5a8aaa;background:#0a1824;border:1px solid #1a3040;border-radius:2px;padding:1px 5px;flex-shrink:0;letter-spacing:.05em}
+
+/* ── Banks panel ───────────────────────────────────────────── */
+.banks-panel{background:#060d18;border-bottom:1px solid #0d1520}
+.banks-hdr{
+  padding:5px 12px;font-size:8px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;
+  color:#5a7a9a;display:flex;align-items:center;gap:8px;
+}
+.banks-list{display:flex;flex-wrap:wrap;gap:4px;padding:4px 12px 8px}
+.bank-btn{
+  background:#0a1220;border:1px solid #1a2a40;border-radius:3px;
+  color:var(--muted);font-size:9px;letter-spacing:.08em;text-transform:uppercase;
+  cursor:pointer;padding:3px 10px;transition:background .15s,border-color .15s,color .15s;
+  white-space:nowrap;
+}
+.bank-btn.enabled{background:rgba(45,255,110,.07);border-color:rgba(45,255,110,.3);color:var(--green)}
+.bank-btn:hover{border-color:#2a4a70;color:var(--text)}
+.bank-btn.enabled:hover{background:rgba(45,255,110,.12)}
 
 /* ── Activity log ─────────────────────────────────────────── */
 .acard{background:var(--card);border:1px solid var(--border);border-radius:4px;overflow:hidden}
@@ -954,6 +972,8 @@ function onMsg(m) {
       s.channelSquelch = s.channelSquelch || {};
       s.channelGain    = s.channelGain    || {};
       s.channelPL      = s.channelPL      || {};
+      s.channelBank    = s.channelBank    || {};
+      s.banks          = s.banks          || {};
       s.skipped        = s.skipped        || [];
       s.holdFreq       = s.holdFreq       || null;
       s.squelchHoldMs  = (s.squelchHold || 2.0) * 1000;
@@ -1123,6 +1143,8 @@ function onMsg(m) {
     s.channelSquelch = m.channelSquelch;
     s.channelGain    = m.channelGain    || {};
     s.channelPL      = m.channelPL      || {};
+    s.channelBank    = m.channelBank    || {};
+    s.banks          = m.banks          || {};
     s.defaultSquelch = m.defaultSquelch;
     s.defaultGain    = m.defaultGain;
     s.skipped        = m.skipped || [];
@@ -1211,6 +1233,8 @@ function cardHtml(s) {
   const csq    = s.channelSquelch || {};
   const cgain  = s.channelGain    || {};
   const cpl    = s.channelPL      || {};
+  const cbank  = s.channelBank    || {};
+  const banks  = s.banks          || {};
   const skpSet = new Set(s.skipped || []);
   const defSq  = (s.defaultSquelch || 0.05).toFixed(3);
   const defGn  = s.defaultGain || 'auto';
@@ -1246,6 +1270,7 @@ function cardHtml(s) {
       const sq   = f in csq ? csq[f].toFixed(3) : defSq;
       const gn   = f in cgain ? cgain[f] : defGn;
       const pl   = f in cpl  ? cpl[f]   : 0;
+      const bk   = cbank[f] || '';
       const t    = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
       if (f === _editFreq) {
         rows += '<div class="ch-edit-row" onclick="event.stopPropagation()">'
@@ -1254,6 +1279,7 @@ function cardHtml(s) {
           + '<input class="ch-edit-in ch-edit-sq" id="ch-edit-sq" type="number" value="' + sq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
           + '<input class="ch-edit-in ch-edit-gn" id="ch-edit-gain" value="' + escHtml(gn) + '" placeholder="Gain (auto or dB)" title="RF gain: auto, or tenths-of-dB (e.g. 25.4)">'
           + '<input class="ch-edit-in ch-edit-pl" id="ch-edit-pl" type="number" value="' + (pl || '') + '" step="0.1" min="0" placeholder="PL Hz (0=off)" title="CTCSS tone Hz, 0 or blank to disable">'
+          + '<input class="ch-edit-in" id="ch-edit-bank" value="' + escHtml(bk) + '" placeholder="Bank (optional)" title="Scan bank name" style="width:90px">'
           + '<button class="ch-save" onclick="saveChannel(\'' + f + '\')">SAVE</button>'
           + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
           + '</div>';
@@ -1263,6 +1289,7 @@ function cardHtml(s) {
           + '<span class="ch-dot">' + (skp ? '─' : act ? '◉' : '○') + '</span>'
           + '<span class="ch-f">' + f + '</span>'
           + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
+          + (bk ? '<span class="ch-bank-badge">' + escHtml(bk) + '</span>' : '')
           + (pl ? '<span class="ch-pl">PL ' + pl + '</span>' : '')
           + '<span class="ch-sq">SQ ' + sq + '</span>'
           + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
@@ -1293,6 +1320,7 @@ function cardHtml(s) {
       + '<input class="ch-edit-in ch-edit-sq" id="ch-add-sq" type="number" value="' + defSq + '" step="0.001" min="0.001" max="0.5" title="Squelch RMS">'
       + '<input class="ch-edit-in ch-edit-gn" id="ch-add-gain" value="' + escHtml(defGn) + '" placeholder="Gain" title="RF gain: auto or dB">'
       + '<input class="ch-edit-in ch-edit-pl" id="ch-add-pl" type="number" step="0.1" min="0" placeholder="PL Hz (0=off)" title="CTCSS tone Hz, 0 or blank to disable">'
+      + '<input class="ch-edit-in" id="ch-add-bank" placeholder="Bank (optional)" style="width:90px">'
       + '<button class="ch-save" onclick="addChannel()">ADD</button>'
       + '<button class="ch-cancel" onclick="cancelEdit()">✕</button>'
       + '</div>';
@@ -1323,6 +1351,17 @@ function cardHtml(s) {
     + 'Channel Bank<span class="coll-arrow">' + (collapsed ? '▶' : '▼') + '</span></div>'
     + (collapsed ? '' : rows + addArea);
 
+  // Banks panel (only render when >1 bank or when the single bank is not Default)
+  const bankNames = Object.keys(banks);
+  const showBanks = bankNames.length > 1 || (bankNames.length === 1 && bankNames[0] !== 'Default');
+  const bankBtns = bankNames.sort().map(b => {
+    const on = banks[b] !== false;
+    return '<button class="bank-btn' + (on ? ' enabled' : '') + '" onclick="event.stopPropagation();toggleBank(' + escHtml(JSON.stringify(s.mount)) + ',' + escHtml(JSON.stringify(b)) + ',' + (on?'false':'true') + ')">' + escHtml(b) + '</button>';
+  }).join('');
+  const banksPanelHtml = showBanks
+    ? '<div class="banks-panel"><div class="banks-hdr">SCAN BANKS</div><div class="banks-list">' + bankBtns + '</div></div>'
+    : '';
+
   return '<div class="sc-sticky">'
     + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + rxBadge + lockBadge + holdBadge + '</span>' + connStatus + '</div>'
     + errHtml
@@ -1333,6 +1372,7 @@ function cardHtml(s) {
     + '<div class="sqbar"><div class="sqfill-wrap"><div class="sqfill' + (isRx?' active':'') + '" id="sqfill_' + eid(s.mount) + '"></div></div><span class="sq-label">SIG</span><span class="sq-level" id="sqlevel_' + eid(s.mount) + '"></span></div>'
     + '</div>'
     + '<div class="ac-inline-slot"></div>'
+    + banksPanelHtml
     + '<div class="chlist">' + chBankHtml + '</div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
@@ -1445,10 +1485,11 @@ function saveChannel(freq) {
   const plEl  = document.getElementById('ch-edit-pl');
   const pl    = plEl ? parseFloat(plEl.value) : NaN;
   const gn    = (document.getElementById('ch-edit-gain').value || '').trim();
+  const bk    = (document.getElementById('ch-edit-bank') ? document.getElementById('ch-edit-bank').value : '').trim();
   fetch('/api/channel', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn, pl: isNaN(pl) ? 0 : pl }),
+    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn, pl: isNaN(pl) ? 0 : pl, bank: bk }),
   }).catch(e => console.error('[api]', e));
 }
 function deleteChannel(freq) {
@@ -1484,11 +1525,19 @@ function addChannel() {
   const sq    = parseFloat(document.getElementById('ch-add-sq').value);
   const gn    = (document.getElementById('ch-add-gain').value  || '').trim();
   const pl    = parseFloat(document.getElementById('ch-add-pl').value);
+  const bk    = (document.getElementById('ch-add-bank') ? document.getElementById('ch-add-bank').value : '').trim();
   if (!freq) return;
   fetch('/api/channel', {
     method: 'PUT',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn, pl: isNaN(pl) ? 0 : pl }),
+    body: JSON.stringify({ freq, label: label || freq, squelch_rms: isNaN(sq) ? null : sq, gain: gn, pl: isNaN(pl) ? 0 : pl, bank: bk }),
+  }).catch(e => console.error('[api]', e));
+}
+function toggleBank(mount, bank, enabled) {
+  fetch('/api/bank', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ bank, enabled }),
   }).catch(e => console.error('[api]', e));
 }
 
@@ -1858,6 +1907,8 @@ class RTLFMScanner:
                  channel_squelch: dict[str, float] | None = None,
                  channel_gain: dict[str, str] | None = None,
                  channel_pl: dict[str, float] | None = None,
+                 channel_bank: dict[str, str] | None = None,
+                 banks_enabled: dict[str, bool] | None = None,
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
@@ -1873,6 +1924,8 @@ class RTLFMScanner:
         self.channel_squelch = channel_squelch or {}  # per-freq squelch overrides
         self.channel_gain    = channel_gain    or {}  # per-freq gain overrides (e.g. "25.4" or "auto")
         self.channel_pl      = channel_pl      or {}  # per-freq CTCSS tone (Hz); 0.0 or absent = disabled
+        self.channel_bank    = channel_bank    or {}  # per-freq bank name ('' = Default)
+        self.banks_enabled   = banks_enabled   or {}  # bank name → enabled (absent = True)
         self.skipped         = skipped or set()       # freqs excluded from scan rotation
         self.debug           = debug
         self.ppm          = ppm
@@ -1923,7 +1976,8 @@ class RTLFMScanner:
     def set_channel(self, freq: str, label: str,
                     squelch_rms: float | None = None,
                     gain: str | None = None,
-                    pl: float | None = None) -> None:
+                    pl: float | None = None,
+                    bank: str | None = None) -> None:
         with self._lock:
             self.channels[freq] = label
             if squelch_rms is not None:
@@ -1939,6 +1993,8 @@ class RTLFMScanner:
                     self.channel_pl[freq] = pl
                 else:
                     self.channel_pl.pop(freq, None)
+            if bank is not None:
+                self.channel_bank[freq] = bank.strip()
 
     def remove_channel(self, freq: str) -> None:
         with self._lock:
@@ -1946,6 +2002,7 @@ class RTLFMScanner:
             self.channel_squelch.pop(freq, None)
             self.channel_gain.pop(freq, None)
             self.channel_pl.pop(freq, None)
+            self.channel_bank.pop(freq, None)
             self.skipped.discard(freq)
             if self._active_freq == freq:
                 self._active_freq  = None
@@ -1974,6 +2031,23 @@ class RTLFMScanner:
                 self.hold_freq = freq
                 self._resume_event.set()  # break out of current dwell immediately
                 return True
+
+    def set_bank_enabled(self, bank: str, enabled: bool) -> None:
+        with self._lock:
+            self.banks_enabled[bank] = enabled
+        self._resume_event.set()  # skip any held freq that may now be excluded
+
+    def bank_list(self) -> dict[str, bool]:
+        """Return {bank_name: enabled} for all known banks including Default."""
+        with self._lock:
+            banks: dict[str, bool] = {}
+            for freq in self.channels:
+                b = self.channel_bank.get(freq, '') or 'Default'
+                if b not in banks:
+                    banks[b] = self.banks_enabled.get(b, True)
+            if not banks:
+                banks['Default'] = self.banks_enabled.get('Default', True)
+        return banks
 
     def resume_scan(self) -> None:
         """Force the scan loop to advance to the next frequency immediately."""
@@ -2147,7 +2221,10 @@ class RTLFMScanner:
                 # Rebuild the channel list each iteration so additions/removals/skips
                 # made through the UI take effect without restarting the scanner.
                 with self._lock:
-                    freq_keys = [f for f in self.channels if f not in self.skipped]
+                    freq_keys = [f for f in self.channels
+                                 if f not in self.skipped
+                                 and self.banks_enabled.get(
+                                     self.channel_bank.get(f, '') or 'Default', True)]
                 n_freqs = len(freq_keys)
                 if n_freqs == 0:
                     time.sleep(0.1)
@@ -2510,10 +2587,14 @@ def _save_config() -> None:
                     entry["gain"] = scanner.channel_gain[freq]
                 if freq in scanner.channel_pl:
                     entry["pl"] = scanner.channel_pl[freq]
+                bk = scanner.channel_bank.get(freq, '')
+                if bk:
+                    entry["bank"] = bk
                 new_channels[freq] = entry if len(entry) > 1 else lbl
         cfg["channels"] = new_channels
         with scanner._lock:
             cfg["skipped"] = sorted(scanner.skipped)
+            cfg["banks_enabled"] = {k: v for k, v in scanner.banks_enabled.items() if not v}
         with open(_config_path, "w") as f:
             json.dump(cfg, f, indent=2)
     except Exception as e:
@@ -2529,6 +2610,8 @@ def _channels_event() -> dict:
             "channelSquelch": dict(scanner.channel_squelch),
             "channelGain":    dict(scanner.channel_gain),
             "channelPL":      dict(scanner.channel_pl),
+            "channelBank":    dict(scanner.channel_bank),
+            "banks":          scanner.bank_list(),
             "defaultSquelch": scanner.squelch_rms,
             "defaultGain":    scanner.gain,
             "skipped":        sorted(scanner.skipped),
@@ -2607,6 +2690,8 @@ def _state() -> dict:
         channel_squelch = dict(s.channel_squelch)
         channel_gain    = dict(s.channel_gain)
         channel_pl      = dict(s.channel_pl)
+        channel_bank    = dict(s.channel_bank)
+        banks           = s.bank_list()
         skipped         = sorted(s.skipped)
         hold_freq       = s.hold_freq
     return {
@@ -2624,6 +2709,8 @@ def _state() -> dict:
             "channelSquelch": channel_squelch,
             "channelGain":    channel_gain,
             "channelPL":      channel_pl,
+            "channelBank":    channel_bank,
+            "banks":          banks,
             "defaultSquelch": s.squelch_rms,
             "defaultGain":    s.gain,
             "squelchHold":    s.squelch_hold,
@@ -2819,14 +2906,17 @@ async def api_put_channel(request: Request):
             pl_arg = 0.0
     else:
         pl_arg = ...  # sentinel: don't touch existing pl
+    bank_arg: str | None = body.get("bank", None)
+    if bank_arg is not None:
+        bank_arg = str(bank_arg).strip()
     if gain_arg is ... and pl_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms)
+        scanner.set_channel(freq, label, squelch_rms, bank=bank_arg)
     elif gain_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, pl=pl_arg)
+        scanner.set_channel(freq, label, squelch_rms, pl=pl_arg, bank=bank_arg)
     elif pl_arg is ...:
-        scanner.set_channel(freq, label, squelch_rms, gain_arg)
+        scanner.set_channel(freq, label, squelch_rms, gain_arg, bank=bank_arg)
     else:
-        scanner.set_channel(freq, label, squelch_rms, gain_arg, pl_arg)
+        scanner.set_channel(freq, label, squelch_rms, gain_arg, pl_arg, bank=bank_arg)
     _save_config()
     _emit(_channels_event())
     return {"ok": True, "freq": freq}
@@ -2850,6 +2940,19 @@ async def api_toggle_skip(request: Request):
     _save_config()
     _emit(_channels_event())
     return {"ok": True, "skipped": now_skipped}
+
+
+@app.post("/api/bank")
+async def api_set_bank(request: Request):
+    body = await request.json()
+    bank = str(body.get("bank", "")).strip()
+    if not bank:
+        return {"ok": False, "error": "bank required"}
+    enabled = bool(body.get("enabled", True))
+    scanner.set_bank_enabled(bank, enabled)
+    _save_config()
+    _emit(_channels_event())
+    return {"ok": True, "bank": bank, "enabled": enabled}
 
 
 @app.post("/api/hold")
@@ -3337,6 +3440,7 @@ def main():
     channel_squelch : dict[str, float] = {}
     channel_gain    : dict[str, str]   = {}
     channel_pl      : dict[str, float] = {}
+    channel_bank    : dict[str, str]   = {}
     for freq, val in raw_channels.items():
         if isinstance(val, dict):
             channels[freq] = val.get("label", freq)
@@ -3346,8 +3450,13 @@ def main():
                 channel_gain[freq] = str(val["gain"])
             if "pl" in val and float(val["pl"]) > 0.0:
                 channel_pl[freq] = float(val["pl"])
+            if "bank" in val and str(val["bank"]).strip():
+                channel_bank[freq] = str(val["bank"]).strip()
         else:
             channels[freq] = str(val)
+
+    # banks_enabled only stores disabled banks (absent = enabled); invert on load
+    raw_banks_enabled: dict[str, bool] = cfg.get("banks_enabled", {})
 
     scanner = RTLFMScanner(
         name            = cfg.get("name", "Scanner"),
@@ -3357,6 +3466,8 @@ def main():
         channel_squelch = channel_squelch,
         channel_gain    = channel_gain,
         channel_pl      = channel_pl,
+        channel_bank    = channel_bank,
+        banks_enabled   = raw_banks_enabled,
         skipped         = set(cfg.get("skipped", [])),
         ppm             = cfg.get("ppm", 0),
         modulation      = cfg.get("modulation", "fm"),
