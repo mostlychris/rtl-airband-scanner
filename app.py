@@ -2538,6 +2538,7 @@ class RTLFMScanner:
                         # Normalise to ±1 (typical AM envelope is 0–1 normalised IQ).
                         peak = float(np.max(np.abs(env))) or 1.0
                         audio = np.clip(env / peak, -1.0, 1.0)
+                        audio_for_ctcss = audio  # notch filter not applied to AM
                         # Squelch via envelope RMS (no phase-variance for AM).
                         rms_am = float(np.sqrt(np.mean(env ** 2)))
                         noise_ratio  = max(0.0, 1.0 - rms_am * 20.0)
@@ -2575,6 +2576,10 @@ class RTLFMScanner:
                         )
                         deemph_z = float(zf[0])
                         audio = np.clip(audio_f64, -1.0, 1.0).astype(np.float32)
+                        # Preserve pre-notch audio for CTCSS analysis — the notch
+                        # filter removes the sub-audio tone from the speaker output
+                        # but CTCSS detection must see the unfiltered signal.
+                        audio_for_ctcss = audio
                         if hp_pl_b is not None:
                             audio_hp, hp_pl_zi = lfilter(hp_pl_b, hp_pl_a, audio, zi=hp_pl_zi)
                             audio = np.clip(audio_hp, -1.0, 1.0).astype(np.float32)
@@ -2598,7 +2603,7 @@ class RTLFMScanner:
                     # On non-PL channels ctcss_detected is always True (no gating needed).
                     signal_present = rms > (close_thr if squelch_open else threshold)
                     if signal_present or squelch_open:
-                        ctcss_buf.extend(audio.tolist())
+                        ctcss_buf.extend(audio_for_ctcss.tolist())
                         if len(ctcss_buf) >= ctcss_window:
                             ctcss_detected, detected_ctcss = _ctcss_analyze(
                                 np.array(ctcss_buf[:ctcss_window], dtype=np.float32),
