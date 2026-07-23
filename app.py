@@ -497,7 +497,7 @@ select.modal-in{cursor:pointer}
   <div class="ac-knob-wrap">
     <div class="ac-knob-lbl">LP Cut</div>
     <canvas id="aLPKnob" class="ac-knob" width="52" height="52"></canvas>
-    <div class="ac-knob-val" id="aLPLbl">3.0k</div>
+    <div class="ac-knob-val" id="aLPLbl">1.5k</div>
   </div>
   <div class="ac-seg-group">
     <div class="ac-seg-lbl">SQ Tail</div>
@@ -610,7 +610,7 @@ function escHtml(s) {
 // ── Audio settings (persisted in localStorage) ────────────────────────────────
 const A = {
   vol:    Math.min(1, Math.max(0, parseFloat(localStorage.getItem('a_vol') ?? '1') || 1)),
-  lp:     parseInt(  localStorage.getItem('a_lp')     ?? '3000', 10),
+  lp:     parseInt(  localStorage.getItem('a_lp')     ?? '1500', 10),
   sqtail: (localStorage.getItem('a_sqtail') ?? 'false') === 'true',
 };
 
@@ -1796,7 +1796,7 @@ function initControls() {
     onChange: v => { document.getElementById('aVolLbl').textContent = Math.round(v) + '%'; A.vol = v/100; localStorage.setItem('a_vol', A.vol); _applyVolume(); }
   });
   document.getElementById('aVolLbl').textContent = vol + '%';
-  _knobSetup('aLPKnob', { min:2000, max:8000, value:A.lp, step:500, color:'#ffb000',
+  _knobSetup('aLPKnob', { min:1000, max:8000, value:A.lp, step:500, color:'#ffb000',
     onChange: v => { v = Math.round(v/500)*500; document.getElementById('aLPLbl').textContent = (v/1000).toFixed(1)+'k'; A.lp=v; localStorage.setItem('a_lp',v); if(_lpNode)_lpNode.frequency.value=v; else if(_mseActive&&S.audioOn)_mseConnect(); else if(_isNativeApp&&audMount)openAudioStream(audMount); }
   });
   document.getElementById('aLPLbl').textContent = (A.lp / 1000).toFixed(1) + 'k';
