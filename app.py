@@ -2065,7 +2065,7 @@ class RTLFMScanner:
                  skipped: set[str] | None = None,
                  ppm: int = 0, modulation: str = "fm",
                  device: str = "0", gain: str = "auto",
-                 samp_rate: int = 240000, scan_dwell: float = 0.5,
+                 samp_rate: int = 240000, scan_dwell: float = 0.25,
                  fir_taps: int = 127,
                  debug: bool = False,
                  on_event=None, on_audio=None):
@@ -3761,7 +3761,7 @@ def main():
         device          = cfg.get("device", "0"),
         gain            = cfg.get("gain", "auto"),
         samp_rate       = cfg.get("samp_rate", 240000),
-        scan_dwell      = cfg.get("scan_dwell", 0.5),
+        scan_dwell      = cfg.get("scan_dwell", 0.25),
         fir_taps        = cfg.get("fir_taps", 127),
         debug           = args.debug,
         on_event        = _emit,
