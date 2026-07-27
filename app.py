@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "2.9.9"
+VERSION    = "3.0.0"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -214,6 +214,8 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
   border-bottom:1px solid var(--glass-border);
 }
 .sc-name{font-size:10px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#b0c4d8;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sc-chl-btn{background:rgba(12,24,65,.6);border:1px solid var(--glass-border);border-radius:3px;color:var(--muted);cursor:pointer;font-size:8px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;padding:3px 10px;white-space:nowrap;transition:all .15s;flex-shrink:0}
+.sc-chl-btn:hover{border-color:rgba(100,160,255,.4);color:var(--cyan);box-shadow:var(--cyan-glow)}
 .sc-status{display:flex;align-items:center;gap:5px;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;flex-shrink:0}
 .sc-led{width:6px;height:6px;border-radius:50%;flex-shrink:0}
 .sc-status.ok{color:var(--green)}.sc-status.ok .sc-led{background:var(--green);box-shadow:var(--glow-sm)}
@@ -394,6 +396,26 @@ select.modal-in{cursor:pointer}
 }
 .modal-cancel:hover{border-color:rgba(42,74,110,.7);color:var(--text)}
 
+/* ── Channel bank modal ────────────────────────────────────── */
+.chbank-modal{
+  background:rgba(10,22,65,0.88);border:1px solid var(--glass-border);border-radius:8px;
+  width:min(860px,98vw);max-height:88vh;display:flex;flex-direction:column;
+  backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);
+  box-shadow:0 8px 48px rgba(0,5,30,.9),inset 0 1px 0 var(--glass-hi);
+  transform:translateY(8px);transition:transform .15s;
+}
+.modal-backdrop.open .chbank-modal{transform:translateY(0)}
+.chbank-modal .modal-hdr{flex-shrink:0}
+.chbank-modal-body{flex:1;overflow-y:auto;min-height:0}
+.chbank-footer{
+  flex-shrink:0;padding:8px 12px;border-top:1px solid var(--glass-border);
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+}
+.chbank-add{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted);cursor:pointer;transition:color .15s;letter-spacing:.1em;text-transform:uppercase;padding:3px 0}
+.chbank-add:hover{color:var(--cyan)}
+.chbank-close{background:rgba(255,255,255,.03);border:1px solid rgba(30,42,62,.8);border-radius:3px;color:var(--muted);cursor:pointer;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:5px 16px}
+.chbank-close:hover{border-color:rgba(42,74,110,.7);color:var(--text)}
+
 /* ── Banks panel ───────────────────────────────────────────── */
 .banks-panel{background:rgba(8,18,52,0.6);border-bottom:1px solid var(--glass-border)}
 .banks-hdr{
@@ -516,6 +538,23 @@ select.modal-in{cursor:pointer}
   <div id="ac-acts-wrap"><div id="ac-acts"></div></div>
   </div>
 </div>
+</div>
+<!-- Channel bank modal -->
+<div class="modal-backdrop" id="chBankModal" onclick="if(event.target===this)closeChBankModal()">
+  <div class="chbank-modal">
+    <div class="modal-hdr">
+      <span id="chBankModalTitle">Channel Bank</span>
+      <button class="modal-close" onclick="closeChBankModal()">✕</button>
+    </div>
+    <div class="chbank-modal-body">
+      <div id="chBankModalBanks"></div>
+      <div class="chlist" id="chBankModalList"></div>
+    </div>
+    <div class="chbank-footer">
+      <div class="chbank-add" onclick="closeChBankModal();showAddChannel()">＋ Add Frequency</div>
+      <button class="chbank-close" onclick="closeChBankModal()">Close</button>
+    </div>
+  </div>
 </div>
 <!-- Channel edit/add modal -->
 <div class="modal-backdrop" id="chModal" onclick="if(event.target===this)closeChModal()">
@@ -1359,6 +1398,7 @@ function updateCard(mount, skipIfEditing) {
   d.innerHTML = cardHtml(s);
   _placeAudioControls();
   _updateAcActs(mount);
+  refreshChBankModal();
 }
 function cardClass(s) {
   let c = 'scard';
@@ -1390,6 +1430,7 @@ function cardHtml(s) {
   // Panel header: stream name + status LED
   const holdBadge = isHeld
     ? ' <span style="font-size:9px;color:var(--amber);letter-spacing:.1em">⏸ HOLD</span>' : '';
+  const chCount = freqs.length;
   const connStatus = s.connected
     ? '<span class="sc-status ok' + (!isRx && !isHeld ? ' scanning' : '') + '"><span class="sc-led"></span>' + (isHeld ? 'HOLD' : 'SCANNING') + '</span>'
     : '<span class="sc-status ' + (s.lastError ? 'err' : 'warn') + '"><span class="sc-led"></span>' + (s.lastError ? 'ERROR' : 'OPENING') + '</span>';
@@ -1474,7 +1515,9 @@ function cardHtml(s) {
     : '';
 
   return '<div class="sc-sticky">'
-    + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + holdBadge + '</span>' + connStatus + '</div>'
+    + '<div class="sc-panel-hdr"><span class="sc-name">' + escHtml(s.name) + holdBadge + '</span>'
+    + '<button class="sc-chl-btn" onclick="event.stopPropagation();openChBankModal(' + escHtml(JSON.stringify(s.mount)) + ')">☰ Channels' + (chCount ? ' (' + chCount + ')' : '') + '</button>'
+    + connStatus + '</div>'
     + errHtml
     + '<div class="sc-display' + (isRx ? ' active' : '') + '">'
     + '<div class="sc-lbl-row">'
@@ -1483,9 +1526,7 @@ function cardHtml(s) {
     + '</div>'
     + metaHtml
     + '</div>'
-    + '<div class="ac-inline-slot"></div>'
-    + banksPanelHtml
-    + '<div class="chlist">' + chBankHtml + '</div>';
+    + '<div class="ac-inline-slot"></div>';
 }
 function eid(m) { return m.replace(/[^a-zA-Z0-9]/g,'_'); }
 
@@ -1582,6 +1623,93 @@ function toggleActLog() {
   if (arrow) arrow.textContent = _actCollapsed ? '▶' : '▼';
 }
 
+// ── Channel bank modal ─────────────────────────────────────────────────────────
+let _chBankMount = null;
+
+function openChBankModal(mount) {
+  _chBankMount = mount;
+  const s = S.streams[mount] || {};
+  document.getElementById('chBankModalTitle').textContent = (s.name || mount) + ' — Channel Bank';
+  _renderChBankModal();
+  document.getElementById('chBankModal').classList.add('open');
+}
+
+function closeChBankModal() {
+  _chBankMount = null;
+  document.getElementById('chBankModal').classList.remove('open');
+}
+
+function refreshChBankModal() {
+  if (_chBankMount) _renderChBankModal();
+}
+
+function _renderChBankModal() {
+  const mount = _chBankMount;
+  const s = S.streams[mount];
+  if (!s) return;
+  const chs   = s.channels || {};
+  const csq   = s.channelSquelch || {};
+  const cgain = s.channelGain || {};
+  const cpl   = s.channelPL || {};
+  const cbank = s.channelBank || {};
+  const cmod  = s.channelModulation || {};
+  const skpSet = new Set(s.skipped || []);
+  const banks  = s.banks || {};
+  const af     = s.activeFreq;
+  const heldF  = s.holdFreq || null;
+  const defSq  = (s.defaultSquelch || 0.05).toFixed(3);
+  const defGn  = s.defaultGain || 'auto';
+  const freqs  = Object.keys(chs).sort((a,b) => parseFloat(a)-parseFloat(b));
+
+  // Banks panel
+  const bankNames = Object.keys(banks);
+  const showBanks = bankNames.length > 1 || (bankNames.length === 1 && bankNames[0] !== 'Default');
+  let banksHtml = '';
+  if (showBanks) {
+    const btns = bankNames.sort().map(b => {
+      const on = banks[b] !== false;
+      return '<button class="bank-btn' + (on ? ' enabled' : '') + '" onclick="toggleBank(' + escHtml(JSON.stringify(mount)) + ',' + escHtml(JSON.stringify(b)) + ',' + (on?'false':'true') + ')">' + escHtml(b) + '</button>';
+    }).join('');
+    banksHtml = '<div class="banks-panel"><div class="banks-hdr">SCAN BANKS</div><div class="banks-list">' + btns + '</div></div>';
+  }
+  document.getElementById('chBankModalBanks').innerHTML = banksHtml;
+
+  // Channel rows
+  let rows = '';
+  if (freqs.length) {
+    freqs.forEach(f => {
+      const lbl    = chs[f] || '';
+      const act    = f === af;
+      const held   = f === heldF;
+      const skp    = skpSet.has(f);
+      const sq     = f in csq ? csq[f].toFixed(3) : defSq;
+      const gn     = f in cgain ? cgain[f] : defGn;
+      const pl     = f in cpl ? cpl[f] : 0;
+      const bk     = cbank[f] || '';
+      const md     = cmod[f] || '';
+      const t      = act && s.activeSince ? new Date(s.activeSince).toLocaleTimeString() : '';
+      rows += '<div class="ch' + (act?' active':'') + (held&&!act?' held':'') + (skp?' skipped':'') + '" onclick="holdChannel(\'' + f + '\')" title="' + (held?'Release hold':'Tune to ' + f + ' MHz') + '">'
+        + '<span class="ch-dot">' + (skp ? '─' : act ? '◉' : '○') + '</span>'
+        + '<span class="ch-f">' + f + '</span>'
+        + '<span class="ch-l">' + escHtml(lbl!==f?lbl:'') + '</span>'
+        + (bk ? '<span class="ch-bank-badge">' + escHtml(bk) + '</span>' : '')
+        + (md ? '<span class="ch-mode-badge">' + escHtml(md.toUpperCase()) + '</span>' : '')
+        + (pl ? '<span class="ch-pl">PL ' + pl + '</span>' : '')
+        + '<span class="ch-sq">SQ ' + sq + '</span>'
+        + '<span class="ch-gn">G ' + (gn || 'auto') + '</span>'
+        + '<span class="ch-t">' + t + '</span>'
+        + '<div class="ch-acts">'
+        + '<button class="ch-btn skip" onclick="event.stopPropagation();skipChannel(\'' + f + '\')">' + (skp?'SCAN':'SKIP') + '</button>'
+        + '<button class="ch-btn" onclick="event.stopPropagation();editChannel(\'' + f + '\')">EDIT</button>'
+        + '<button class="ch-btn del" onclick="event.stopPropagation();deleteChannel(\'' + f + '\')">DEL</button>'
+        + '</div></div>';
+    });
+  } else {
+    rows = '<div class="noch">No channels configured</div>';
+  }
+  document.getElementById('chBankModalList').innerHTML = rows;
+}
+
 // ── Channel management ─────────────────────────────────────────────────────────
 let _chModalFreq = null;  // null = add mode, string = edit mode
 
@@ -1638,6 +1766,8 @@ function showAddChannel() {
 function closeChModal() {
   document.getElementById('chModal').classList.remove('open');
   _chModalFreq = null;
+  // Re-open bank modal if it was open when edit was triggered
+  if (_chBankMount) document.getElementById('chBankModal').classList.add('open');
 }
 
 function saveChModal() {
@@ -1665,7 +1795,11 @@ function saveChModal() {
   }).then(() => closeChModal()).catch(e => console.error('[api]', e));
 }
 
-function editChannel(freq) { openChModal(freq); }
+function editChannel(freq) {
+  // Hide bank modal while edit modal is open; closeChModal() restores it.
+  document.getElementById('chBankModal').classList.remove('open');
+  openChModal(freq);
+}
 function cancelEdit() { closeChModal(); }
 
 function deleteChannel(freq) {
