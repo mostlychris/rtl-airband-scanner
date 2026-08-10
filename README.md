@@ -2,6 +2,8 @@
 
 A web-based RTL-SDR frequency scanner with a live browser UI and real-time audio streaming. Runs as a self-contained Python server — no external SDR software required.
 
+<img width="379" height="222" alt="scannerscreen" src="https://github.com/user-attachments/assets/dad4d81b-d73c-4ba8-a655-9bdeebec69aa" />
+
 ## Requirements
 
 - RTL-SDR dongle (RTL2832U-based)
