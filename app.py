@@ -195,6 +195,10 @@ class BroadcastifyFeeder:
                 '-f', 's16le', '-ar', str(self.sample_rate), '-ac', '1',
                 '-i', 'pipe:0',
                 '-c:a', 'libmp3lame', '-b:a', f'{self.bitrate}k',
+                '-ice_name', 'RTL Scanner',
+                '-ice_description', 'RTL-SDR frequency scanner',
+                '-ice_genre', 'Scanner',
+                '-content_type', 'audio/mpeg',
                 '-f', 'mp3', self.url,
             ]
             proc = None
