@@ -117,6 +117,32 @@ Channels can be a plain string label or an object with any of these fields:
 | `hp_filter` | Sub-audio notch filter in Hz — removes a specific tone from audio output without affecting CTCSS detection |
 | `bandwidth` | Channel bandwidth in kHz (e.g. `12.5`, `25`) — auto-selects FM deviation |
 
+### Broadcastify / Icecast streaming
+
+Add a `broadcastify` block to `scanner_config.json` to push a continuous live MP3 stream to Broadcastify (or any Icecast server):
+
+```json
+"broadcastify": {
+  "enabled": true,
+  "server": "audio2.broadcastify.com",
+  "port": 80,
+  "mountpoint": "/your-mount-key",
+  "password": "your-password",
+  "bitrate": 32
+}
+```
+
+| Field | Description | Default |
+|---|---|---|
+| `enabled` | Set `false` to disable without removing the block | required |
+| `server` | Icecast/Broadcastify relay hostname | required |
+| `port` | Icecast port | `80` |
+| `mountpoint` | Mount path (include leading `/`) | required |
+| `password` | Stream source password | required |
+| `bitrate` | MP3 bitrate in kbps | `32` |
+
+The feeder streams whatever the scanner is currently receiving. Between transmissions it sends silence so the Icecast connection stays alive. If the connection drops it reconnects automatically after 5 seconds. Feed status (LIVE / connecting / error) is shown in the browser header as a **BCF** indicator.
+
 ## Browser UI
 
 ### Scanner card

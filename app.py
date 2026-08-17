@@ -20,7 +20,7 @@ from collections import deque
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse, Response
 
-VERSION    = "3.0.0"
+VERSION    = "3.1.0"
 AUDIO_RATE = 24000   # PCM output rate; default hw_rate = 240,000 Hz (10× oversample)
 
 
@@ -100,6 +100,115 @@ def _ctcss_analyze(buf: np.ndarray, sample_rate: float,
     return gated, detected
 
 
+# ── Broadcastify / Icecast feeder ─────────────────────────────────────────────
+import subprocess as _subprocess
+
+class BroadcastifyFeeder:
+    """Continuous MP3 stream to a Broadcastify (Icecast) server.
+
+    Reads raw 16-bit mono PCM from an internal queue and pipes it to ffmpeg,
+    which encodes to MP3 and pushes via the Icecast protocol.  Self-generates
+    silence between scanner transmissions so the stream stays alive.
+    Auto-reconnects on disconnect with a 5-second delay.
+    """
+    _CHUNK_SAMPLES = 1200          # 50 ms of silence at 24 kHz
+    _RECONNECT_DELAY = 5.0
+
+    def __init__(self, server: str, port: int, mountpoint: str, password: str,
+                 bitrate: int = 32, sample_rate: int = AUDIO_RATE,
+                 on_status=None):
+        self.url         = f"icecast://source:{password}@{server}:{port}{mountpoint}"
+        self.bitrate     = bitrate
+        self.sample_rate = sample_rate
+        self._on_status  = on_status   # callback(connected: bool, error: str|None)
+        self._q: _q_mod.Queue = _q_mod.Queue(maxsize=200)
+        self._running    = False
+        self._thread     = None
+        self.connected   = False
+        self.last_error: str | None = None
+
+    def start(self):
+        self._running = True
+        self._thread  = threading.Thread(target=self._run, daemon=True,
+                                          name="broadcastify-feeder")
+        self._thread.start()
+
+    def stop(self):
+        self._running = False
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=8.0)
+
+    def send(self, pcm: bytes):
+        """Feed a chunk of raw 16-bit mono PCM. Drop oldest if queue full."""
+        try: self._q.put_nowait(pcm)
+        except _q_mod.Full:
+            try: self._q.get_nowait()
+            except _q_mod.Empty: pass
+            try: self._q.put_nowait(pcm)
+            except _q_mod.Full: pass
+
+    def _notify(self, connected: bool, error: str | None = None):
+        self.connected  = connected
+        self.last_error = error
+        if self._on_status:
+            try: self._on_status(connected, error)
+            except Exception: pass
+
+    def _run(self):
+        import time as _t
+        silence = bytes(self._CHUNK_SAMPLES * 2)
+        chunk_secs = self._CHUNK_SAMPLES / self.sample_rate
+
+        while self._running:
+            cmd = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'error',
+                '-f', 's16le', '-ar', str(self.sample_rate), '-ac', '1',
+                '-i', 'pipe:0',
+                '-c:a', 'libmp3lame', '-b:a', f'{self.bitrate}k',
+                '-f', 'mp3', self.url,
+            ]
+            proc = None
+            try:
+                proc = _subprocess.Popen(cmd, stdin=_subprocess.PIPE,
+                                          stderr=_subprocess.PIPE)
+                self._notify(True)
+                print(f"[Broadcastify] Connected → {self.url.split('@')[-1]}")
+
+                while self._running:
+                    if proc.poll() is not None:
+                        stderr = proc.stderr.read().decode(errors='replace').strip()
+                        raise RuntimeError(f"ffmpeg exited: {stderr or 'no output'}")
+                    try:
+                        chunk = self._q.get(timeout=chunk_secs)
+                    except _q_mod.Empty:
+                        chunk = silence
+                    proc.stdin.write(chunk)
+                    proc.stdin.flush()
+
+            except Exception as exc:
+                err = str(exc)
+                print(f"[Broadcastify] Error: {err}")
+                self._notify(False, err)
+            else:
+                self._notify(False)
+
+            if proc is not None:
+                try: proc.stdin.close()
+                except Exception: pass
+                try: proc.wait(timeout=3)
+                except Exception:
+                    try: proc.kill()
+                    except Exception: pass
+
+            if self._running:
+                _t.sleep(self._RECONNECT_DELAY)
+
+        self._notify(False)
+        print("[Broadcastify] Feeder stopped")
+
+import queue as _q_mod   # alias so it doesn't shadow inner-function imports
+
+
 # ── Embedded page ──────────────────────────────────────────────────────────────
 PAGE = r"""<!DOCTYPE html>
 <html lang="en">
@@ -162,6 +271,13 @@ h1{font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;c
 .abtn:active{transform:translateY(1px);box-shadow:0 1px 0 rgba(4,6,9,.5)}
 .abtn.on{border-color:rgba(45,255,110,.5);color:var(--green);background:rgba(45,255,110,.06)}
 .asrc{font-size:10px;color:var(--cyan);letter-spacing:.08em;text-transform:uppercase;opacity:.8}
+.bcast-wrap{display:flex;align-items:center;gap:5px;flex-shrink:0}
+.bcast-dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex-shrink:0;transition:background .3s,box-shadow .3s}
+.bcast-dot.live{background:#ff4020;box-shadow:0 0 6px rgba(255,64,32,.7),0 0 14px rgba(255,64,32,.35)}
+.bcast-dot.err{background:var(--red);box-shadow:0 0 5px var(--red)}
+.bcast-lbl{font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);transition:color .3s}
+.bcast-lbl.live{color:#ff6040}
+.bcast-lbl.err{color:var(--red)}
 
 /* ── Layout ───────────────────────────────────────────────── */
 .app-layout{max-width:1260px;margin:0 auto}
@@ -493,6 +609,10 @@ select.modal-in{cursor:pointer}
   <span id="wscount" style="font-size:.65em;color:var(--muted);margin-left:6px" title="Active connections"></span>
   <span id="wslog" style="font-size:.65em;color:#f84;margin-left:6px" title="Last disconnect — persists until next disconnect"></span>
   <div class="spacer"></div>
+  <div class="bcast-wrap" id="bcastWrap" style="display:none" title="Broadcastify feed status">
+    <div class="bcast-dot" id="bcastDot"></div>
+    <span class="bcast-lbl" id="bcastLbl">BCF</span>
+  </div>
   <span class="asrc" id="asrc"></span>
   <span id="audio-lag-display" style="font-size:.65em;color:var(--muted);margin-right:6px;display:none" title="Measured audio buffer depth"></span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
@@ -1141,6 +1261,9 @@ function onMsg(m) {
     });
     renderAll();
     autoSelect();
+    if (m.broadcastify) {
+      _updateBcastUI(m.broadcastify.connected, m.broadcastify.error, m.broadcastify.enabled);
+    }
     // Resume audio on reconnect / page load.
     // For the native app S.audioOn is always true, so this also handles the
     // initial auto-start without any user interaction required.
@@ -1310,6 +1433,30 @@ function onMsg(m) {
   } else if (m.type === 'ws_clients') {
     const el = document.getElementById('wscount');
     if (el) el.textContent = m.count > 0 ? `·${m.count}` : '';
+  } else if (m.type === 'bcast_status') {
+    _updateBcastUI(m.connected, m.error, true);
+  }
+}
+
+function _updateBcastUI(connected, error, enabled) {
+  const wrap = document.getElementById('bcastWrap');
+  const dot  = document.getElementById('bcastDot');
+  const lbl  = document.getElementById('bcastLbl');
+  if (!wrap) return;
+  if (!enabled) { wrap.style.display = 'none'; return; }
+  wrap.style.display = 'flex';
+  if (error) {
+    dot.className = 'bcast-dot err';
+    lbl.className = 'bcast-lbl err';
+    lbl.title     = 'BCF ERROR: ' + error;
+  } else if (connected) {
+    dot.className = 'bcast-dot live';
+    lbl.className = 'bcast-lbl live';
+    lbl.title     = 'Broadcastify LIVE';
+  } else {
+    dot.className = 'bcast-dot';
+    lbl.className = 'bcast-lbl';
+    lbl.title     = 'Broadcastify connecting…';
   }
 }
 
@@ -2226,8 +2373,9 @@ class RTLFMScanner:
         self.fir_taps     = fir_taps
         self.scan_dwell   = scan_dwell
         self.audio_rate   = AUDIO_RATE
-        self._on_event  = on_event
-        self._on_audio  = on_audio
+        self._on_event      = on_event
+        self._on_audio      = on_audio
+        self._broadcastify: "BroadcastifyFeeder | None" = None
 
         self._running      = False
         self._lock         = threading.Lock()
@@ -2389,11 +2537,15 @@ class RTLFMScanner:
     def _emit(self, evt: dict):
         if self._on_event: self._on_event(evt)
 
+    def set_broadcastify(self, feeder: "BroadcastifyFeeder | None"):
+        self._broadcastify = feeder
+
     def _emit_audio(self, pcm: bytes):
         # Advance the sequence counter before dispatching so that any freq_change
         # emitted in the same chunk sees the sample position AFTER this audio block.
         self.audio_seq += len(pcm) // 2   # bytes → 16-bit samples
         if self._on_audio: self._on_audio(pcm)
+        if self._broadcastify: self._broadcastify.send(pcm)
 
     def _loop(self):
         import time
@@ -3074,6 +3226,15 @@ async def _audio_stats_loop():
         })
 
 
+_bcast_feeder: "BroadcastifyFeeder | None" = None
+
+
+def _bcast_status_event(connected: bool, error: str | None):
+    """Called by BroadcastifyFeeder on connect/disconnect; relays to WS clients."""
+    _emit({"type": "bcast_status", "connected": connected,
+           "error": error, "url": _bcast_feeder.url.split('@')[-1] if _bcast_feeder else ""})
+
+
 def _state() -> dict:
     s = scanner
     with s._lock:
@@ -3088,9 +3249,16 @@ def _state() -> dict:
         banks              = s._bank_list_locked()
         skipped         = sorted(s.skipped)
         hold_freq       = s.hold_freq
+    bcast = _bcast_feeder
     return {
         "type":       "state",
         "audio_rate": s.audio_rate,
+        "broadcastify": {
+            "enabled":   bcast is not None,
+            "connected": bcast.connected if bcast else False,
+            "error":     bcast.last_error if bcast else None,
+            "url":       bcast.url.split('@')[-1] if bcast else "",
+        },
         "streams": [{
             "mount":          "sdr",
             "name":           s.name,
@@ -3129,12 +3297,17 @@ async def _startup():
     _evq    = asyncio.Queue()
     asyncio.create_task(_bcast_loop())
     asyncio.create_task(_audio_stats_loop())
+    if _bcast_feeder:
+        scanner.set_broadcastify(_bcast_feeder)
+        _bcast_feeder.start()
     scanner.start()
     print("Scanner started")
 
 
 @app.on_event("shutdown")
 async def _shutdown():
+    if _bcast_feeder:
+        await asyncio.get_event_loop().run_in_executor(None, _bcast_feeder.stop)
     if scanner:
         await asyncio.get_event_loop().run_in_executor(
             None, lambda: scanner.stop_and_join(timeout=15.0))
@@ -3880,6 +4053,23 @@ def main():
 
     # banks_enabled only stores disabled banks (absent = enabled); invert on load
     raw_banks_enabled: dict[str, bool] = cfg.get("banks_enabled", {})
+
+    # ── Broadcastify feeder ───────────────────────────────────────────────────
+    global _bcast_feeder
+    bcast_cfg = cfg.get("broadcastify", {})
+    if bcast_cfg.get("enabled") and bcast_cfg.get("server") and bcast_cfg.get("mountpoint"):
+        _bcast_feeder = BroadcastifyFeeder(
+            server      = bcast_cfg["server"],
+            port        = int(bcast_cfg.get("port", 80)),
+            mountpoint  = bcast_cfg["mountpoint"],
+            password    = bcast_cfg.get("password", ""),
+            bitrate     = int(bcast_cfg.get("bitrate", 32)),
+            sample_rate = AUDIO_RATE,
+            on_status   = _bcast_status_event,
+        )
+        print(f"[Broadcastify] Feed configured → {_bcast_feeder.url.split('@')[-1]}")
+    else:
+        _bcast_feeder = None
 
     scanner = RTLFMScanner(
         name            = cfg.get("name", "Scanner"),
