@@ -174,16 +174,27 @@ class BroadcastifyFeeder:
                 self._notify(True)
                 print(f"[Broadcastify] Connected → {self.url.split('@')[-1]}")
 
+                next_tick = _t.monotonic()
                 while self._running:
                     if proc.poll() is not None:
                         stderr = proc.stderr.read().decode(errors='replace').strip()
                         raise RuntimeError(f"ffmpeg exited: {stderr or 'no output'}")
+                    # Pace writes at real-time rate so ffmpeg sees a steady stream.
+                    # Drain any queued real audio first; fall back to silence.
                     try:
-                        chunk = self._q.get(timeout=chunk_secs)
+                        chunk = self._q.get_nowait()
                     except _q_mod.Empty:
                         chunk = silence
                     proc.stdin.write(chunk)
                     proc.stdin.flush()
+                    next_tick += chunk_secs
+                    sleep = next_tick - _t.monotonic()
+                    if sleep > 0:
+                        _t.sleep(sleep)
+                    elif sleep < -0.5:
+                        # We've fallen more than 500 ms behind — reset the clock
+                        # rather than trying to catch up with a burst of writes.
+                        next_tick = _t.monotonic()
 
             except Exception as exc:
                 err = str(exc)
