@@ -145,6 +145,7 @@ Add a `broadcastify` block to `scanner_config.json` to push a continuous live MP
 | `lp_cutoff` | Lowpass filter cutoff in Hz applied before encoding (matches browser LP filter) | `1500` |
 | `admin_user` | Icecast admin username for metadata updates | `"admin"` |
 | `admin_password` | Icecast admin password — required for stream title to update | `""` |
+| `metadata_delay` | Seconds to wait before pushing a metadata update, to compensate for stream buffer lag in players like VLC | `2.0` |
 
 The feeder streams whatever the scanner is currently receiving. Between transmissions it sends silence so the Icecast connection stays alive. If the connection drops it reconnects automatically after 5 seconds. Feed status (LIVE / connecting / error) is shown in the browser header as a **BCF** indicator. When `admin_password` is set, the stream title (song metadata) is updated via the Icecast admin API each time the scanner changes frequency, so listeners see the active frequency and channel label.
 

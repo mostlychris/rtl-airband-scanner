@@ -117,15 +117,17 @@ class BroadcastifyFeeder:
     def __init__(self, server: str, port: int, mountpoint: str, password: str,
                  bitrate: int = 32, sample_rate: int = AUDIO_RATE,
                  lp_cutoff: int = 1500, admin_user: str = "admin",
-                 admin_password: str = "", on_status=None):
-        self.url          = f"icecast://source:{password}@{server}:{port}{mountpoint}"
-        self.bitrate      = bitrate
-        self.sample_rate  = sample_rate
-        self.lp_cutoff    = lp_cutoff
-        self._meta_base   = f"http://{server}:{port}/admin/metadata"
-        self._meta_mount  = mountpoint
-        self._admin_user  = admin_user
-        self._admin_pass  = admin_password
+                 admin_password: str = "", metadata_delay: float = 2.0,
+                 on_status=None):
+        self.url             = f"icecast://source:{password}@{server}:{port}{mountpoint}"
+        self.bitrate         = bitrate
+        self.sample_rate     = sample_rate
+        self.lp_cutoff       = lp_cutoff
+        self._meta_base      = f"http://{server}:{port}/admin/metadata"
+        self._meta_mount     = mountpoint
+        self._admin_user     = admin_user
+        self._admin_pass     = admin_password
+        self._metadata_delay = metadata_delay
         self._on_status  = on_status   # callback(connected: bool, error: str|None)
         self._q: _q_mod.Queue = _q_mod.Queue(maxsize=200)
         self._running    = False
@@ -161,8 +163,11 @@ class BroadcastifyFeeder:
             "mount": self._meta_mount, "mode": "updinfo", "song": title,
         })
         url = f"{self._meta_base}?{params}"
+        delay = self._metadata_delay
         def _do():
             try:
+                if delay > 0:
+                    import time as _t; _t.sleep(delay)
                 mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
                 mgr.add_password(None, self._meta_base, self._admin_user, self._admin_pass)
                 opener = urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(mgr))
@@ -4120,9 +4125,10 @@ def main():
             bitrate        = int(bcast_cfg.get("bitrate", 32)),
             sample_rate    = AUDIO_RATE,
             lp_cutoff      = int(bcast_cfg.get("lp_cutoff", 1500)),
-            admin_user     = bcast_cfg.get("admin_user", "admin"),
-            admin_password = bcast_cfg.get("admin_password", ""),
-            on_status      = _bcast_status_event,
+            admin_user      = bcast_cfg.get("admin_user", "admin"),
+            admin_password  = bcast_cfg.get("admin_password", ""),
+            metadata_delay  = float(bcast_cfg.get("metadata_delay", 2.0)),
+            on_status       = _bcast_status_event,
         )
         print(f"[Broadcastify] Feed configured → {_bcast_feeder.url.split('@')[-1]}")
     else:
