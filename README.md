@@ -140,6 +140,7 @@ Add a `broadcastify` block to `scanner_config.json` to push a continuous live MP
 | `mountpoint` | Mount path (include leading `/`) | required |
 | `password` | Stream source password | required |
 | `bitrate` | MP3 bitrate in kbps | `32` |
+| `lp_cutoff` | Lowpass filter cutoff in Hz applied before encoding (matches browser LP filter) | `1500` |
 
 The feeder streams whatever the scanner is currently receiving. Between transmissions it sends silence so the Icecast connection stays alive. If the connection drops it reconnects automatically after 5 seconds. Feed status (LIVE / connecting / error) is shown in the browser header as a **BCF** indicator.
 
