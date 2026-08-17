@@ -116,10 +116,11 @@ class BroadcastifyFeeder:
 
     def __init__(self, server: str, port: int, mountpoint: str, password: str,
                  bitrate: int = 32, sample_rate: int = AUDIO_RATE,
-                 on_status=None):
+                 lp_cutoff: int = 1500, on_status=None):
         self.url         = f"icecast://source:{password}@{server}:{port}{mountpoint}"
         self.bitrate     = bitrate
         self.sample_rate = sample_rate
+        self.lp_cutoff   = lp_cutoff
         self._on_status  = on_status   # callback(connected: bool, error: str|None)
         self._q: _q_mod.Queue = _q_mod.Queue(maxsize=200)
         self._running    = False
@@ -156,8 +157,14 @@ class BroadcastifyFeeder:
 
     def _run(self):
         import time as _t
+        from scipy.signal import butter, lfilter, lfilter_zi
         silence = bytes(self._CHUNK_SAMPLES * 2)
         chunk_secs = self._CHUNK_SAMPLES / self.sample_rate
+
+        # Lowpass filter coefficients — 2nd-order Butterworth, reset on reconnect.
+        nyq = self.sample_rate / 2.0
+        _lp_b, _lp_a = butter(2, min(self.lp_cutoff, nyq - 1) / nyq, btype='low')
+        _lp_zi = lfilter_zi(_lp_b, _lp_a) * 0.0
 
         while self._running:
             cmd = [
@@ -185,6 +192,10 @@ class BroadcastifyFeeder:
                         chunk = self._q.get_nowait()
                     except _q_mod.Empty:
                         chunk = silence
+                    # Apply lowpass filter to suppress hiss before encoding.
+                    samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+                    filtered, _lp_zi = lfilter(_lp_b, _lp_a, samples, zi=_lp_zi)
+                    chunk = (np.clip(filtered, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
                     proc.stdin.write(chunk)
                     proc.stdin.flush()
                     next_tick += chunk_secs
@@ -4076,6 +4087,7 @@ def main():
             password    = bcast_cfg.get("password", ""),
             bitrate     = int(bcast_cfg.get("bitrate", 32)),
             sample_rate = AUDIO_RATE,
+            lp_cutoff   = int(bcast_cfg.get("lp_cutoff", 1500)),
             on_status   = _bcast_status_event,
         )
         print(f"[Broadcastify] Feed configured → {_bcast_feeder.url.split('@')[-1]}")
