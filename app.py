@@ -116,11 +116,16 @@ class BroadcastifyFeeder:
 
     def __init__(self, server: str, port: int, mountpoint: str, password: str,
                  bitrate: int = 32, sample_rate: int = AUDIO_RATE,
-                 lp_cutoff: int = 1500, on_status=None):
-        self.url         = f"icecast://source:{password}@{server}:{port}{mountpoint}"
-        self.bitrate     = bitrate
-        self.sample_rate = sample_rate
-        self.lp_cutoff   = lp_cutoff
+                 lp_cutoff: int = 1500, admin_user: str = "admin",
+                 admin_password: str = "", on_status=None):
+        self.url          = f"icecast://source:{password}@{server}:{port}{mountpoint}"
+        self.bitrate      = bitrate
+        self.sample_rate  = sample_rate
+        self.lp_cutoff    = lp_cutoff
+        self._meta_base   = f"http://{server}:{port}/admin/metadata"
+        self._meta_mount  = mountpoint
+        self._admin_user  = admin_user
+        self._admin_pass  = admin_password
         self._on_status  = on_status   # callback(connected: bool, error: str|None)
         self._q: _q_mod.Queue = _q_mod.Queue(maxsize=200)
         self._running    = False
@@ -147,6 +152,24 @@ class BroadcastifyFeeder:
             except _q_mod.Empty: pass
             try: self._q.put_nowait(pcm)
             except _q_mod.Full: pass
+
+    def update_metadata(self, freq: str, label: str):
+        """Push stream title to Icecast admin API (best-effort, non-blocking)."""
+        import urllib.request, urllib.parse, threading as _th
+        title = f"{freq} MHz — {label}" if label else f"{freq} MHz"
+        params = urllib.parse.urlencode({
+            "mount": self._meta_mount, "mode": "updinfo", "song": title,
+        })
+        url = f"{self._meta_base}?{params}"
+        def _do():
+            try:
+                mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
+                mgr.add_password(None, self._meta_base, self._admin_user, self._admin_pass)
+                opener = urllib.request.build_opener(urllib.request.HTTPBasicAuthHandler(mgr))
+                opener.open(url, timeout=3).close()
+            except Exception:
+                pass
+        _th.Thread(target=_do, daemon=True).start()
 
     def _notify(self, connected: bool, error: str | None = None):
         self.connected  = connected
@@ -3222,6 +3245,11 @@ async def _bcast_loop():
     while True:
         event = await _evq.get()
         await wsman.broadcast(event)
+        if _bcast_feeder:
+            if event.get("type") == "freq_change":
+                _bcast_feeder.update_metadata(event.get("freq", ""), event.get("label", ""))
+            elif event.get("type") == "freq_clear":
+                _bcast_feeder.update_metadata("", "Scanning…")
 
 
 async def _audio_stats_loop():
@@ -4081,14 +4109,16 @@ def main():
     bcast_cfg = cfg.get("broadcastify", {})
     if bcast_cfg.get("enabled") and bcast_cfg.get("server") and bcast_cfg.get("mountpoint"):
         _bcast_feeder = BroadcastifyFeeder(
-            server      = bcast_cfg["server"],
-            port        = int(bcast_cfg.get("port", 80)),
-            mountpoint  = bcast_cfg["mountpoint"],
-            password    = bcast_cfg.get("password", ""),
-            bitrate     = int(bcast_cfg.get("bitrate", 32)),
-            sample_rate = AUDIO_RATE,
-            lp_cutoff   = int(bcast_cfg.get("lp_cutoff", 1500)),
-            on_status   = _bcast_status_event,
+            server         = bcast_cfg["server"],
+            port           = int(bcast_cfg.get("port", 80)),
+            mountpoint     = bcast_cfg["mountpoint"],
+            password       = bcast_cfg.get("password", ""),
+            bitrate        = int(bcast_cfg.get("bitrate", 32)),
+            sample_rate    = AUDIO_RATE,
+            lp_cutoff      = int(bcast_cfg.get("lp_cutoff", 1500)),
+            admin_user     = bcast_cfg.get("admin_user", "admin"),
+            admin_password = bcast_cfg.get("admin_password", ""),
+            on_status      = _bcast_status_event,
         )
         print(f"[Broadcastify] Feed configured → {_bcast_feeder.url.split('@')[-1]}")
     else:
