@@ -156,7 +156,7 @@ class BroadcastifyFeeder:
     def update_metadata(self, freq: str, label: str):
         """Push stream title to Icecast admin API (best-effort, non-blocking)."""
         import urllib.request, urllib.parse, threading as _th
-        title = f"{freq} MHz — {label}" if label else f"{freq} MHz"
+        title = f"{freq} MHz - {label}" if label else f"{freq} MHz"
         params = urllib.parse.urlencode({
             "mount": self._meta_mount, "mode": "updinfo", "song": title,
         })
@@ -3249,7 +3249,7 @@ async def _bcast_loop():
             if event.get("type") == "freq_change":
                 _bcast_feeder.update_metadata(event.get("freq", ""), event.get("label", ""))
             elif event.get("type") == "freq_clear":
-                _bcast_feeder.update_metadata("", "Scanning…")
+                _bcast_feeder.update_metadata("", "Scanning...")
 
 
 async def _audio_stats_loop():
