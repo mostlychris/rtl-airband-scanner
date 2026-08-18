@@ -520,7 +520,8 @@ input:checked~.ac-sw .ac-sw-t{left:14px;background:var(--green)}
 /* ── Channel edit modal ─────────────────────────────────────── */
 .modal-backdrop{
   position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;
-  display:flex;align-items:center;justify-content:center;
+  display:flex;align-items:flex-start;justify-content:center;
+  overflow-y:auto;padding:16px 8px;
   opacity:0;pointer-events:none;transition:opacity .15s;
   backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
 }
