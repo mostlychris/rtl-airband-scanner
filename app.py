@@ -669,11 +669,12 @@ select.modal-in{cursor:pointer}
     <span class="bcast-lbl" id="bcastLbl">BCF</span>
   </div>
   <span class="asrc" id="asrc"></span>
-  <span id="audio-lag-display" style="font-size:.65em;color:var(--muted);margin-right:6px;display:none" title="Measured audio buffer depth"></span>
+  <span id="audio-lag-display" style="font-size:.65em;color:var(--muted);margin-right:6px" title="Measured audio buffer depth">lag: —</span>
   <button class="abtn" id="abtn" onclick="toggleAudio()">
     <span id="aico">◼</span><span id="albl">Audio Off</span>
   </button>
 </header>
+<div id="audio-dbg-line" style="font-size:.58em;color:var(--muted);background:rgba(0,0,0,.18);padding:2px 12px;font-family:monospace;letter-spacing:.03em;min-height:1.4em"></div>
 <div class="app-layout">
 <main>
   <div class="grid" id="grid"></div>
@@ -853,6 +854,22 @@ const _AUDIO_RATE    = 24000;    // must match server AUDIO_RATE
 let _serverAudioSeq  = 0;        // latest audio_seq from audio_stats (display only)
 let _lastOutSamples  = 0;        // latest out_samples from audio_stats
 let _lagEstMs        = 0;        // current lag estimate in ms
+let _lagReloadPending = false;   // stream reload scheduled due to lag drift
+let _lastFcLag       = null;     // lag used at last freq_change event
+
+// WAV stream max sensible lag (ms).  If the estimate exceeds this the audio
+// element was likely paused by the browser (tab switch, autoplay policy, etc.)
+// while the server kept sending silence, causing currentTime to freeze while
+// out_samples grew.  The resulting inflated estimate would delay all UI events
+// beyond the end of any transmission, showing no signal indicator.
+const _LAG_MAX_MS = 2000;
+
+function _updateLagBadge() {
+  const lagDisplay = document.getElementById('audio-lag-display');
+  if (!lagDisplay) return;
+  if (!S.audioOn || _isNativeApp) { lagDisplay.textContent = 'lag: —'; return; }
+  lagDisplay.textContent = 'lag: ' + Math.round(_lagEstMs) + 'ms';
+}
 
 function _tickLag() {
   // Interpolate between audio_stats broadcasts using the last known out_samples.
@@ -861,7 +878,18 @@ function _tickLag() {
   if (_mseActive || _isNativeApp || !_audEl || _audEl.paused || !_lastOutSamples) return;
   if (_audEl.currentTime < 0.3) return;
   const raw = Math.max(0, (_lastOutSamples - _audEl.currentTime * _AUDIO_RATE) / _AUDIO_RATE * 1000);
-  if (raw < 30000) _lagEstMs = raw;
+  if (raw < _LAG_MAX_MS) {
+    _lagEstMs = raw;
+  } else if (!_lagReloadPending) {
+    // Lag too large — stream drifted (browser paused while server kept sending).
+    // Reset estimate to 0 so events fire promptly, then reload the stream after
+    // a short delay to drain the accumulated silence buffer.
+    _lagEstMs = 0;
+    console.warn('[audio] lag ' + raw.toFixed(0) + 'ms — stream drifted, reloading');
+    _lagReloadPending = true;
+    setTimeout(() => { _lagReloadPending = false; _reloadStream(); }, 800);
+  }
+  _updateLagBadge();
 }
 setInterval(_tickLag, 200);
 
@@ -1018,6 +1046,12 @@ function _initAudEl() {
     _retries++;
     setTimeout(_reloadStream, Math.min(1000 * _retries, 30000));
   };
+  // Reset lag counters whenever the element's source is cleared or reloaded
+  // (fires on _audEl.load() from _reloadStream, or when Chrome drops and
+  // re-requests the WAV stream after a network/idle timeout).
+  _audEl.addEventListener('emptied', () => {
+    if (!_mseActive) { _lastOutSamples = 0; _lagEstMs = 0; }
+  });
 
   if (_isAndroidBrowser && window.MediaSource && MediaSource.isTypeSupported('audio/mpeg')) {
     // Android browser / TWA: use MSE + WebSocket + ffmpeg to work around
@@ -1341,22 +1375,19 @@ function onMsg(m) {
     // real signal audio and collapses lag to 0 after quiet periods).
     if (!_mseActive && !_isNativeApp && _lastOutSamples && _audEl && _audEl.currentTime > 0.3) {
       const raw = Math.max(0, (_lastOutSamples - _audEl.currentTime * _AUDIO_RATE) / _AUDIO_RATE * 1000);
-      if (raw < 30000) _lagEstMs = raw;
+      if (raw < _LAG_MAX_MS) _lagEstMs = raw;
+      // High-lag drift handled by _tickLag's reload logic
     }
     // Header lag badge
-    const lagDisplay = document.getElementById('audio-lag-display');
-    if (lagDisplay && S.audioOn && !_isNativeApp) {
-      const ms = Math.round(_lagEstMs);
-      lagDisplay.style.display = ms > 50 ? '' : 'none';
-      lagDisplay.textContent = ms + ' ms delay';
-    }
+    _updateLagBadge();
     const dbgEl = document.getElementById('audio-dbg-line');
     if (dbgEl && dbgEl.style.display !== 'none') {
       const lagMs   = _lagEstMs.toFixed(0);
       const gateVal = _gateNode ? _gateNode.gain.value.toFixed(2) : String(_gateGain);
       const elState = _audEl ? (_audEl.paused ? 'paused' : 'playing') + '/rs' + _audEl.readyState : 'none';
       const ctx     = _audioCtx ? _audioCtx.state : 'none';
-      dbgEl.textContent = `seq:${m.audio_seq} out:${m.out_samples} q:${m.queue_depth} lag:${lagMs}ms ctx:${ctx} gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
+      const fcPart  = _lastFcLag !== null ? `  fc:${Math.round(_lastFcLag)}ms` : '';
+      dbgEl.textContent = `seq:${m.audio_seq} out:${m.out_samples} q:${m.queue_depth} lag:${lagMs}ms${fcPart}  ctx:${ctx} gate:${gateVal} sq:${_sqActive?1:0} ${elState}`;
     }
   } else if (m.type === 'freq_change') {
     const s = S.streams[m.mount]; if (!s) return;
@@ -1370,6 +1401,7 @@ function onMsg(m) {
     // Snapshot lag now so all UI events in this transmission use the same delay.
     const _fcLag = _audioLagMs();
     s.txLagMs = _fcLag;
+    _lastFcLag = _fcLag;
     console.log(`[ws] freq_change ${m.freq} mount=${m.mount} audMount=${audMount} lag=${_fcLag}ms sqtail=${A.sqtail}`);
     const _doFreqChange = () => {
       s.activeFreq  = m.freq;
